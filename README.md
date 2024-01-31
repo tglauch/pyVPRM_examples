@@ -1,4 +1,4 @@
-# Example scripts for the usage of pyVPRM
+# Example scripts
 This repository contains a collection of example scripts for the usage of ```pyVPRM``` which can be installed from here 
 ```https://github.com/tglauch/pyVPRM/blob/main/README.md```
 

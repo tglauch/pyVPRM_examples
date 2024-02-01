@@ -56,7 +56,7 @@ with open(args.config, "r") as stream:
         print(exc)
 
 # Initialize VPRM instance with the copernicus land cover config
-vprm_inst = vprm(vprm_config_path='../../pyVPRM/vprm_configs/copernicus_land_cover.yaml',
+vprm_inst = vprm(vprm_config_path=os.path.join(pyVPRM.__path__, 'vprm_configs/copernicus_land_cover.yaml'),
                  n_cpus=args.n_cpus)
 files = glob.glob(os.path.join(cfg['sat_image_path'],# str(args.year),
                                '*h{:02d}v{:02d}*.nc'.format(h, v)))

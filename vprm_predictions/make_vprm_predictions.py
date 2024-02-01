@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import pyVPRM
 from pyVPRM.sat_managers.viirs import VIIRS
 from pyVPRM.sat_managers.modis import modis
 from pyVPRM.sat_managers.copernicus import copernicus_land_cover_map

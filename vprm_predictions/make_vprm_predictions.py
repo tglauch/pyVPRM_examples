@@ -56,6 +56,10 @@ with open(args.config, "r") as stream:
     except yaml.YAMLError as exc:
         print(exc)
 
+if not os.path.exists(cfg['predictions_path']):
+    os.makedirs(cfg['predictions_path'])
+
+
 # Initialize VPRM instance with the copernicus land cover config
 vprm_inst = vprm(vprm_config_path=os.path.join(pyVPRM.__path__[0], 'vprm_configs/copernicus_land_cover.yaml'),
                  n_cpus=args.n_cpus)
@@ -155,13 +159,11 @@ for i in np.arange(160,161, 1):
         print(t)
         pred = vprm_inst.make_vprm_predictions(t, fit_params_dict=res_dict,
                                                met_regridder_weights=met_regridder_weights)
-        print(pred)
         if pred is None:
             continue
         preds_gpp.append(pred['gpp'])
         preds_nee.append(pred['nee'])
         ts.append(t)
-        print(time.time()-t0)
 
     preds_gpp = xr.concat(preds_gpp, 'time')
     preds_gpp = preds_gpp.assign_coords({'time': ts})
@@ -181,3 +183,4 @@ for i in np.arange(160,161, 1):
     preds_nee.to_netcdf(outpath)
     preds_nee.close()
 
+print('Done. In order to inspect the output use evaluate_output.ipynb')

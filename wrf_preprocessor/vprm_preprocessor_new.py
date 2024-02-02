@@ -37,6 +37,9 @@ with open(args.config, "r") as stream:
     except yaml.YAMLError as exc:
         print(exc)
 
+if not os.path.exists(cfg['out_path']):
+    os.makedirs(cfg['out_path'])
+
 # Use WRF netcdf to generate an xarray instance. With chunk_x and chunk_y 
 # the output grid can be calculated in disjoint peaces
 
@@ -199,3 +202,6 @@ for key in wrf_op.keys():
         t[~np.isfinite(t)] = 0
         wrf_op[key][key].loc[{'vprm_classes': 8}] = t
     wrf_op[key].to_netcdf(ofile)
+
+
+print('Done. In order to inspect the output use evaluate_wrf_input.ipynb')

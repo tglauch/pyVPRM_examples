@@ -41,7 +41,7 @@ if not os.path.exists(cfg['out_path']):
     os.makedirs(cfg['out_path'])
 
 # Use WRF netcdf to generate an xarray instance. With chunk_x and chunk_y 
-# the output grid can be calculated in disjoint peaces
+# the output grid can be calculated in disjoint pieces
 
 out_grid = parse_wrf_grid_file(cfg['geo_em_file'], n_chunks=cfg['n_chunks'],
                               chunk_x=args.chunk_x, chunk_y=args.chunk_y)

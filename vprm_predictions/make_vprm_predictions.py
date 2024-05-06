@@ -7,6 +7,7 @@ from pyVPRM.sat_managers.copernicus import copernicus_land_cover_map
 from pyVPRM.VPRM import vprm 
 from pyVPRM.meteorologies import era5_monthly_xr, era5_class_dkrz
 from pyVPRM.lib.functions import lat_lon_to_modis
+from pyVPRM.vprm_models import vprm_modified, vprm_base
 import glob
 import time
 import yaml
@@ -138,11 +139,14 @@ vprm_inst.add_land_cover_map(lcm, regridder_save_path=os.path.join(cfg['predicti
 era5_inst = era5_monthly_xr.met_data_handler(args.year, 1, 1, 0,
                                              './data/era5',
                                              keys=['t2m', 'ssrd']) 
-vprm_inst.set_met(era5_inst)
 
 # Load VPRM parameters from a dictionary 
 with open(cfg['vprm_params_dict'], 'rb') as ifile:
     res_dict = pickle.load(ifile)
+
+vprm_model = vprm_base(vprm_pre=vprm_inst,
+                       met=era5_inst,
+                       fit_params_dict= res_dict )
     
 # Make NEE/GPP flux predictions and save them
 days_in_year = 365 + calendar.isleap(args.year)
@@ -157,7 +161,7 @@ for i in np.arange(160,161, 1):
     for t in time_range[:]:
         t0=time.time()
         print(t)
-        pred = vprm_inst.make_vprm_predictions(t, fit_params_dict=res_dict,
+        pred = vprm_model.make_vprm_predictions(t, fit_params_dict=res_dict,
                                                met_regridder_weights=met_regridder_weights)
         if pred is None:
             continue

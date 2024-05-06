@@ -144,9 +144,9 @@ era5_inst = era5_monthly_xr.met_data_handler(args.year, 1, 1, 0,
 with open(cfg['vprm_params_dict'], 'rb') as ifile:
     res_dict = pickle.load(ifile)
 
-vprm_model = vprm_base(vprm_pre=vprm_inst,
-                       met=era5_inst,
-                       fit_params_dict= res_dict )
+vprm_model = vprm_base.vprm_base(vprm_pre=vprm_inst,
+                                 met=era5_inst,
+                                 fit_params_dict= res_dict)
     
 # Make NEE/GPP flux predictions and save them
 days_in_year = 365 + calendar.isleap(args.year)
@@ -161,8 +161,7 @@ for i in np.arange(160,161, 1):
     for t in time_range[:]:
         t0=time.time()
         print(t)
-        pred = vprm_model.make_vprm_predictions(t, fit_params_dict=res_dict,
-                                               met_regridder_weights=met_regridder_weights)
+        pred = vprm_model.make_vprm_predictions(t, met_regridder_weights=met_regridder_weights)
         if pred is None:
             continue
         preds_gpp.append(pred['gpp'])

@@ -63,6 +63,8 @@ days =  [datetime(this_year, 1, 1)+ timedelta(days=i) for i in np.arange(365.)]
 for c, i in enumerate(hvs):
     
     print(i)
+        
+    #Note: There is no need to convert MODIS HDF4 into Netcdf files. You can also use HDF4 files directly.
     file_collections = glob.glob(os.path.join(cfg['sat_image_path'], 
                                                  '*h{:02d}v{:02d}*.nc'.format(i[0], i[1])))
     

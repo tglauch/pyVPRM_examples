@@ -64,6 +64,8 @@ if not os.path.exists(cfg['predictions_path']):
 # Initialize VPRM instance with the copernicus land cover config
 vprm_inst = vprm(vprm_config_path=os.path.join(pyVPRM.__path__[0], 'vprm_configs/copernicus_land_cover.yaml'),
                  n_cpus=args.n_cpus)
+
+#Note: There is no need to convert HDF4 into Netcdf files. You can also use HDF4 files directly.
 files = glob.glob(os.path.join(cfg['sat_image_path'],# str(args.year),
                                '*h{:02d}v{:02d}*.nc'.format(h, v)))
 

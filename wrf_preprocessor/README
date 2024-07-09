@@ -5,3 +5,6 @@ The data have been preprocessed to save memory space, but this does not chance a
 The file can be run with:
 
 python vprm_preprocessor_new.py --year 2022 --config ./config/preprocessor_config.yaml
+
+General Note:
+ There is no need to convert MODIS HDF4 into Netcdf files for using pyVPRM. You can also use HDF4 files directly. Just make sure rasterio is installed with the correct dependencies. 

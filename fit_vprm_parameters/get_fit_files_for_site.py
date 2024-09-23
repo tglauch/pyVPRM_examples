@@ -15,6 +15,7 @@ from dateutil import parser
 import datetime
 from astropy.convolution import Gaussian2DKernel
 from functions import lat_lon_to_modis
+from loguru import logger
 
 
 def all_files_exist(item):
@@ -38,7 +39,7 @@ with open(args.cfg_path, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 s = args.site
 veg_type = args.veg_type
@@ -53,7 +54,7 @@ vprm_insts = []
 tmin = parser.parse("{}0101".format(this_year))
 tmax = parser.parse("{}1231".format(this_year))
 tower_data_list = []
-print(s)
+logger.info(s)
 # if len(tower_data_list) >1:
 #     continue
 if this_year == 2012:
@@ -77,7 +78,7 @@ lat = flux_tower_inst.get_lonlat()[1]
 okay = flux_tower_inst.add_tower_data()
 if not okay:
     exit()
-print(flux_tower_inst.get_site_name())
+logger.info(flux_tower_inst.get_site_name())
 flux_tower_inst.set_land_type(veg_type_id[veg_type])
 
 lat = flux_tower_inst.get_lonlat()[1]
@@ -117,7 +118,7 @@ inp_files = inp_files[inds]
 vprm_inst = vprm(n_cpus=1, sites=[flux_tower_inst])
 
 for c, i in enumerate(inp_files):
-    print(i)
+    logger.info(i)
     if cfg["satellite"] == "modis":
         handler = modis(sat_image_path=i)
         handler.load()

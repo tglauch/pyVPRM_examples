@@ -19,6 +19,7 @@ from shapely.geometry import box, Polygon
 import geopandas as gpd
 from datetime import datetime, timedelta
 from pyproj import Transformer
+from loguru import logger
 
 # Read command line arguments
 p = argparse.ArgumentParser(
@@ -31,7 +32,7 @@ p.add_argument("--chunk_x", type=int, default=1)
 p.add_argument("--chunk_y", type=int, default=1)
 
 args = p.parse_args()
-print(args)
+logger.info(str(args))
 
 # Load config file
 this_year = int(args.year)
@@ -39,7 +40,7 @@ with open(args.config, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
@@ -64,7 +65,7 @@ hvs = np.unique(
     ],
     axis=0,
 )
-print(hvs)
+logger.info(hvs)
 insts = []
 
 # Load the data
@@ -75,7 +76,7 @@ days = [datetime(this_year, 1, 1) + timedelta(days=i) for i in np.arange(365.0)]
 # read the data
 for c, i in enumerate(hvs):
 
-    print(i)
+    logger.info(i)
 
     # Note: There is no need to convert MODIS HDF4 into Netcdf files. You can also use HDF4 files directly.
     file_collections = glob.glob(
@@ -92,7 +93,7 @@ for c, i in enumerate(hvs):
         n_cpus=args.n_cpus,
     )
     for c0, fpath in enumerate(file_collections):
-        print(fpath)
+        logger.info(fpath)
         if cfg["satellite"] == "modis":
             handler = modis(sat_image_path=fpath)
             handler.load()
@@ -100,7 +101,7 @@ for c, i in enumerate(hvs):
             handler = VIIRS(sat_image_path=fpath)
             handler.load()
         else:
-            print("Set the satellite in the cfg either to modis or viirs.")
+            logger.info("Set the satellite in the cfg either to modis or viirs.")
 
         # In order to save memory crop the satellite images to our WRF out grid
         if c0 == 0:
@@ -165,14 +166,14 @@ vprm_inst = insts[0]
 if len(insts) > 1:
     vprm_inst.add_vprm_insts(insts[1:])
 
-print(vprm_inst.sat_imgs.sat_img)
+logger.info(vprm_inst.sat_imgs.sat_img)
 
 # Add the land cover map
 if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
 
 # Add the land cover map and perform regridding to the satellite grid
-print("Generate land cover map")
+logger.info("Generate land cover map")
 veg_file = os.path.join(
     cfg["out_path"], "veg_map_on_modis_grid_{}_{}.nc".format(args.chunk_x, args.chunk_y)
 )
@@ -188,13 +189,13 @@ else:
     if copernicus_data_path is not None:
         tiles_to_add = []
         for i, c in enumerate(glob.glob(os.path.join(copernicus_data_path, "*"))):
-            print(c)
+            logger.info(c)
             temp_map = copernicus_land_cover_map(c)
             temp_map.load()
             dj = vprm_inst.is_disjoint(temp_map)
             if dj:
                 continue
-            print("Add {}".format(c))
+            logger.info("Add {}".format(c))
             if handler_lt is None:
                 handler_lt = temp_map
             else:
@@ -217,7 +218,7 @@ regridder_path = os.path.join(
 )
 
 # Use all the information in the VPRM instance to generate the WRF input files
-print("Create regridder")
+logger.info("Create regridder")
 wrf_op = vprm_inst.to_wrf_output(
     out_grid,
     driver="xEMSF",  # currently only xESMF works here when the WRF grid is 2D
@@ -252,4 +253,4 @@ for key in wrf_op.keys():
     wrf_op[key].to_netcdf(ofile)
 
 
-print("Done. In order to inspect the output use evaluate_wrf_input.ipynb")
+logger.info("Done. In order to inspect the output use evaluate_wrf_input.ipynb")

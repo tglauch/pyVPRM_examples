@@ -5,6 +5,7 @@ import yaml
 from datetime import date
 import argparse
 import shutil
+from loguru import logger
 
 p = argparse.ArgumentParser(
     description="Commend Line Arguments", formatter_class=argparse.RawTextHelpFormatter
@@ -20,13 +21,13 @@ with open(args.config, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 with open(args.login_data, "r") as stream:
     try:
         logins = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 if args.year is not None:
     years = [args.year]
@@ -41,7 +42,7 @@ for year in years:
     savepath = os.path.join(cfg["sat_image_path"], str(year))
     if cfg["satellite"] == "modis":
         for i in hvs:
-            print("Tile {}".format(i))
+            logger.info("Tile {}".format(i))
             handler = modis()
             try:
                 handler.download(
@@ -54,11 +55,11 @@ for year in years:
                     enddate=date(year + 1, 1, 1),
                 )
             except Exception as e:
-                print(e)
+                logger.info(e)
 
     elif cfg["satellite"] == "viirs":
         for i in hvs:
-            print("Tile {}".format(i))
+            logger.info("Tile {}".format(i))
             handler = VIIRS()
             try:
                 handler.download(
@@ -71,7 +72,7 @@ for year in years:
                     enddate=date(year + 1, 1, 1),
                 )
             except Exception as e:
-                print(e)
+                logger.info(e)
 
     else:
-        print("No download function for this satellite implemented")
+        logger.info("No download function for this satellite implemented")

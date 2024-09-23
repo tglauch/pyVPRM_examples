@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pickle
 import argparse
+from loguru import logger
 
 p = argparse.ArgumentParser(
     description="Commend Line Arguments", formatter_class=argparse.RawTextHelpFormatter
@@ -21,14 +22,14 @@ p.add_argument("--v", type=int)
 p.add_argument("--config", type=str)
 p.add_argument("--n_cpus", type=int, default=1)
 args = p.parse_args()
-print(args)
+logger.info(str(args))
 
 
 with open(args.config, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 h = args.h
 v = args.v
@@ -37,7 +38,7 @@ if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
 
 outfile = os.path.join(cfg["out_path"], "h{}v{}_{}.pickle".format(h, v, cfg["year"]))
-print(outfile)
+logger.info(outfile)
 
 
 ### ToDo: Provide a list of lats and lons for the data extraction, i.e. the flux tower positions
@@ -55,7 +56,7 @@ vprm_inst = vprm(n_cpus=args.n_cpus)
 for c, i in enumerate(
     glob.glob(os.path.join(cfg["sat_image_path"], "*h{:02d}v{:02d}*.h*".format(h, v)))
 ):
-    print(i)
+    logger.info(i)
     if cfg["satellite"] == "modis":
         handler = modis(sat_image_path=i)
         handler.load()

@@ -21,6 +21,7 @@ import calendar
 from datetime import datetime, timedelta
 from shapely.geometry import box
 import geopandas as gpd
+from loguru import logger
 
 
 def get_hourly_time_range(year, day_of_year):
@@ -50,7 +51,7 @@ p.add_argument("--config", type=str)
 p.add_argument("--n_cpus", type=int, default=1)
 p.add_argument("--year", type=int)
 args = p.parse_args()
-print("Run with args", args)
+logger.info("Run with args: " + str(args))
 
 h = args.h
 v = args.v
@@ -60,7 +61,7 @@ with open(args.config, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 if not os.path.exists(cfg["predictions_path"]):
     os.makedirs(cfg["predictions_path"])
@@ -85,7 +86,7 @@ files = glob.glob(
 for c, i in enumerate(sorted(files)):
     if ".xml" in i:
         continue
-    print(i)
+    logger.info(i)
     if cfg["satellite"] == "modis":
         handler = modis(sat_image_path=i)
         handler.load()
@@ -137,9 +138,9 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
     # Check overlap with our satellite images
     dj = rasterio.coords.disjoint_bounds(bounds, thandler.sat_img.rio.bounds())
     if dj:
-        print("Do not add {}".format(c))
+        logger.info("Do not add {}".format(c))
         continue
-    print("Add {}".format(c))
+    logger.info("Add {}".format(c))
     if lcm is None:
         lcm = copernicus_land_cover_map(c)
         lcm.load()
@@ -186,7 +187,7 @@ for i in np.arange(160, 161, 1):
     ts = []
     for t in time_range[:]:
         t0 = time.time()
-        print(t)
+        logger.info(t)
         pred = vprm_model.make_vprm_predictions(
             t, met_regridder_weights=met_regridder_weights
         )
@@ -218,4 +219,4 @@ for i in np.arange(160, 161, 1):
     preds_nee.to_netcdf(outpath)
     preds_nee.close()
 
-print("Done. In order to inspect the output use evaluate_output.ipynb")
+logger.info("Done. In order to inspect the output use evaluate_output.ipynb")

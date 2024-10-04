@@ -7,6 +7,7 @@ from pyVPRM.sat_managers.copernicus import copernicus_land_cover_map
 from pyVPRM.VPRM import vprm
 from pyVPRM.meteorologies import era5_monthly_xr, era5_class_dkrz
 from pyVPRM.lib.functions import lat_lon_to_modis
+from pyVPRM.lib.reproject_fiona import transform_geodataframe
 from pyVPRM.vprm_models import vprm_modified, vprm_base
 import glob
 import time
@@ -155,7 +156,9 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
 geom = box(*vprm_inst.sat_imgs.sat_img.rio.bounds())
 df = gpd.GeoDataFrame({"id": 1, "geometry": [geom]})
 df = df.set_crs(vprm_inst.sat_imgs.sat_img.rio.crs)
-df = df.scale(1.3, 1.3)
+df = df.set_geometry(df.scale(1.3, 1.3))
+df = transform_geodataframe(gdf=df, src_crs=df.crs, dst_crs=lcm.sat_img.rio.crs)
+
 lcm.crop_to_polygon(df)
 
 # Add land cover map to the VPRM instance. This wil regrid the land cover map to the satellite grid

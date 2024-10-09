@@ -1,0 +1,47 @@
+name: pyVPRM
+dependencies:
+  - dask
+  - netCDF4
+  - esmf
+  - esmpy
+
+  - tqdm
+  - gitsummary
+  - loguru
+
+  # plotting
+  - hvplot
+  - geoviews
+  - nzgeom
+  - matplotlib
+
+  # development
+  - conda-build  # for `mamba develop`
+  - isort
+  - jupyterlab
+  - jupyter_console
+  - jupyterlab_code_formatter
+  - tox
+  - pytest
+  - black
+  - pylint
+  - mypy
+  - pyright
+  - ipdb
+  - sphinx
+  - sphinx_rtd_theme
+  - sphinx-autodoc-typehints
+  - m2r2
+
+  # # github dependencies
+  # - pip
+  # - pip:
+  #    - "--editable=git+https://github.com/Timothy-W-Hilton/pyVPRM"
+
+  # - pip
+  # - pip:
+  #     - "git+https://github.com/Timothy-W-Hilton/pyVPRM"
+
+  - pip
+  - pip:
+      - "--editable=/home/timh/Code/pyVPRM"

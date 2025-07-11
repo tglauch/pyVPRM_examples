@@ -72,7 +72,7 @@ for c, i in enumerate(hvs):
         continue
 
     new_inst = vprm(vprm_config_path = os.path.join(pyVPRM.__path__[0], 
-                                                    'vprm_configs/copernicus_land_cover.yaml') ,
+                                                    'vprm_configs/copernicus_land_cover_wrf.yaml') ,
                     n_cpus=args.n_cpus)
     for c0, fpath in enumerate(file_collections):
         print(fpath)

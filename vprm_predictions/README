@@ -1,6 +1,6 @@
 This script runs VPRM predictions for a region around Munich using MODIS satellite data, the corpernicus land cover map, and ERA5 meteorological data. 
 
-The data have been preprocessed to save memory space, but this does not chance anything to the analysis procedure, which is commentend in detail in the script.
+The data have been preprocessed to save memory space, but this does not change anything to the analysis procedure, which is commented in detail in the script.
 
 The file can be run with:
 

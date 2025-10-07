@@ -184,7 +184,7 @@ regridder_path = os.path.join(cfg['out_path'], 'regridder_{}_{}.nc'.format(args.
 
 # Use all the information in the VPRM instance to generate the WRF input files
 print('Create regridder')
-wrf_op = vprm_inst.to_wrf_output(out_grid, driver = 'xEMSF', # currently only xESMF works here when the WRF grid is 2D 
+wrf_op = vprm_inst.to_wrf_output(out_grid, driver = 'xESMF', # currently only xESMF works here when the WRF grid is 2D 
                                  regridder_save_path=regridder_path,
                                  mpi=False)
 

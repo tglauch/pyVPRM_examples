@@ -1,0 +1,25 @@
+How to use the lads_downloader.py
+- create and environment (pyVPRM) following: 
+	conda config --add channels conda-forge
+	conda config --set channel_priority strict
+	conda install -c conda-forge dask netCDF4
+	conda install esmf
+	conda install esmpy
+- modify the config.yaml:
+	- set the start and end dates for the period of interest
+	- add the list of tiles you want to download
+- create a token.txt with the token you will get from: https://urs.earthdata.nasa.gov copy the string without the word "bearer" in the first line of the txt
+- run the gen_tasks.py
+	- beware of modifying the sys.path.append("/work/mj0143/b301034/Scrapbook_Analysis/Projects/pyVPRM/pyVPRM")
+	- execute: export N=$(python gen_tasks.py) 
+- go to: download_modis_new_parallel.py and modify also the sys.path.append("/work/mj0143/b301034/Scrapbook_Analysis/Projects/pyVPRM/pyVPRM")
+- the previous two steps are not needed if you have pyVPRM installed in your environment
+- mkdir logs
+- modify the download_modis_new_submit.sh
+	- create the OUTPUT_DIR 
+	- change the OUTPUT_DIR path
+- submit the job like:
+sbatch --array=1-${N}%20 download_modis_new_submit.sh
+- The script downloads all doy in a year for the tiles given. The start and end on the config file are just to provide the years. 
+ 
+ 

@@ -102,6 +102,7 @@ for c, i in enumerate(sorted(files)):
             timestamp_key="sur_refl_day_of_year",
             mask_bad_pixels=True,
             mask_clouds=True,
+            satellite_indices=["evi", "lswi"],
         )
     else:
         handler = VIIRS(sat_image_path=i)
@@ -116,6 +117,7 @@ for c, i in enumerate(sorted(files)):
             b_swir="SurfReflect_I3",
             which_evi="evi2",
             drop_bands=True,
+            satellite_indices=["evi", "lswi"],
         )
 
 # Sort the satellite data by time and run the lowess smoothing

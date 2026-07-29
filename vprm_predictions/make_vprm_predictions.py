@@ -54,7 +54,6 @@ args = p.parse_args()
 
 logger.info("Run with args: " + str(args))
 
-
 h = args.h
 v = args.v
 
@@ -70,7 +69,6 @@ if not os.path.exists(cfg["predictions_path"]):
 
 
 # Initialize VPRM instance with the copernicus land cover config
-
 vprm_inst = vprm_preprocessor(
     vprm_config_path=os.path.join(
         pyVPRM.__path__[0], "vprm_configs/copernicus_land_cover.yaml"
@@ -116,7 +114,7 @@ for c, i in enumerate(sorted(files)):
             b_swir="SurfReflect_I3",
             which_evi="evi2",
             drop_bands=True,
-            satellite_indices=["evi", "lswi"],
+            satellite_indices=["evi2", "lswi"],
         )
 
 # Sort the satellite data by time and run the lowess smoothing
@@ -159,7 +157,6 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
         logger.info("Do not add {}".format(c))
         continue
     logger.info("Add {}".format(c))
-
     if lcm is None:
         lcm = copernicus_land_cover_map(c)
         lcm.load()
@@ -217,7 +214,6 @@ era5_inst = era5_land_destinE_new.met_data_handler(PAT=token,
 # Load VPRM parameters from a dictionary
 with open(cfg["vprm_params_dict"], "rb") as ifile:
     res_dict = pickle.load(ifile)
-
 
 vprm_model = vprm_base_model.vprm_base_model(
     vprm_pre=vprm_inst, met=era5_inst, fit_params_dict=res_dict

@@ -37,10 +37,10 @@ v = args.v
 if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
 
+
 outfile = os.path.join(cfg["out_path"], "h{}v{}_{}.pickle".format(h, v, cfg["year"]))
 
 logger.info(outfile)
-
 
 ### ToDo: Provide a list of lats and lons for the data extraction, i.e. the flux tower positions
 lats = []

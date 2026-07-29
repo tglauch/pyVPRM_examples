@@ -76,9 +76,7 @@ days = [datetime(this_year, 1, 1) + timedelta(days=i) for i in np.arange(365.0)]
 
 # read the data
 for c, i in enumerate(hvs):
-
     print(i)
-
     # Note: There is no need to convert MODIS HDF4 into Netcdf files. You can also use HDF4 files directly.
     file_collections = glob.glob(
         os.path.join(cfg["sat_image_path"], "*h{:02d}v{:02d}*.hdf".format(i[0], i[1]))
@@ -144,6 +142,7 @@ for c, i in enumerate(hvs):
 
     # Apply lowess smoothing in time
 
+
     # new_inst.lowess(keys=['evi', 'lswi'],
     #                times=days,
     #                frac=0.25, it=3) #0.2
@@ -165,7 +164,6 @@ vprm_inst = insts[0]
 if len(insts) > 1:
     vprm_inst.add_vprm_insts(insts[1:])
 
-
 logger.info(vprm_inst.sat_imgs.sat_img)
 
 # Add the land cover map
@@ -173,7 +171,6 @@ if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
 
 # Add the land cover map and perform regridding to the satellite grid
-
 logger.info("Generate land cover map")
 veg_file = os.path.join(
     cfg["out_path"], "veg_map_on_modis_grid_{}_{}.nc".format(args.chunk_x, args.chunk_y)

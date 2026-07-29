@@ -17,8 +17,6 @@ from astropy.convolution import Gaussian2DKernel
 from functions import lat_lon_to_modis
 from loguru import logger
 
-
-
 def all_files_exist(item):
     for key in item.assets.keys():
         path = str(item.assets[key].href[7:])

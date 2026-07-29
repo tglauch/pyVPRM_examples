@@ -79,6 +79,4 @@ for year in years:
                 logger.info(e)
 
     else:
-
         logger.info("No download function for this satellite implemented")
-

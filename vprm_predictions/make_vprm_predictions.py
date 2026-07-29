@@ -21,6 +21,7 @@ import calendar
 from datetime import datetime, timedelta
 from shapely.geometry import box
 import geopandas as gpd
+from loguru import logger
 
 
 def get_hourly_time_range(year, day_of_year):
@@ -50,7 +51,9 @@ p.add_argument("--config", type=str)
 p.add_argument("--n_cpus", type=int, default=1)
 p.add_argument("--year", type=int)
 args = p.parse_args()
-print("Run with args", args)
+
+logger.info("Run with args: " + str(args))
+
 
 h = args.h
 v = args.v
@@ -60,13 +63,14 @@ with open(args.config, "r") as stream:
     try:
         cfg = yaml.safe_load(stream)
     except yaml.YAMLError as exc:
-        print(exc)
+        logger.info(exc)
 
 if not os.path.exists(cfg["predictions_path"]):
     os.makedirs(cfg["predictions_path"])
 
 
 # Initialize VPRM instance with the copernicus land cover config
+
 vprm_inst = vprm_preprocessor(
     vprm_config_path=os.path.join(
         pyVPRM.__path__[0], "vprm_configs/copernicus_land_cover.yaml"
@@ -118,7 +122,6 @@ for c, i in enumerate(sorted(files)):
 # Sort the satellite data by time and run the lowess smoothing
 vprm_inst.sort_and_merge_by_timestamp()
 
-
 # vprm_inst.lowess(keys=['evi', 'lswi'],
 #                  times='daily',
 #                  frac=0.2, it=3)
@@ -147,11 +150,16 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
     )
 
     # Check overlap with our satellite images
-    dj = rasterio.coords.disjoint_bounds(bounds, thandler.sat_img.rio.bounds())
+    # TODO: rasterio.coords.disjoint_bounds requires cartesian coords
+    # (https://rasterio.readthedocs.io/en/stable/api/rasterio.coords.html#module-rasterio.coords)
+    # raise an error here if the bounding coords are not projected
+    bounds_lcm = thandler.sat_img.rio.transform_bounds(vprm_inst.prototype.sat_img.rio.crs)
+    dj = rasterio.coords.disjoint_bounds(bounds, bounds_lcm)
     if dj:
-        print("Do not add {}".format(c))
+        logger.info("Do not add {}".format(c))
         continue
-    print("Add {}".format(c))
+    logger.info("Add {}".format(c))
+
     if lcm is None:
         lcm = copernicus_land_cover_map(c)
         lcm.load()
@@ -162,7 +170,9 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
 geom = box(*vprm_inst.sat_imgs.sat_img.rio.bounds())
 df = gpd.GeoDataFrame({"id": 1, "geometry": [geom]})
 df = df.set_crs(vprm_inst.sat_imgs.sat_img.rio.crs)
-df = df.scale(1.3, 1.3)
+df = df.set_geometry(df.scale(1.3, 1.3))
+df = transform_geodataframe(gdf=df, src_crs=df.crs, dst_crs=lcm.sat_img.rio.crs)
+
 lcm.crop_to_polygon(df)
 
 # Add land cover map to the VPRM instance. This wil regrid the land cover map to the satellite grid
@@ -173,6 +183,7 @@ vprm_inst.add_land_cover_map(
 )
 
 # Set meteorology
+
 
 # era5_inst = era5_monthly_xr.met_data_handler(year=args.year,
 #                                              month=1, 
@@ -207,6 +218,7 @@ era5_inst = era5_land_destinE_new.met_data_handler(PAT=token,
 with open(cfg["vprm_params_dict"], "rb") as ifile:
     res_dict = pickle.load(ifile)
 
+
 vprm_model = vprm_base_model.vprm_base_model(
     vprm_pre=vprm_inst, met=era5_inst, fit_params_dict=res_dict
 )
@@ -224,7 +236,7 @@ for i in np.arange(160, 161, 1):
     ts = []
     for t in time_range[:]:
         t0 = time.time()
-        print(t)
+        logger.info(t)
         pred = vprm_model.make_vprm_predictions(
             t, met_regridder_weights=met_regridder_weights
         )
@@ -256,4 +268,4 @@ for i in np.arange(160, 161, 1):
     preds_nee.to_netcdf(outpath)
     preds_nee.close()
 
-print("Done. In order to inspect the output use evaluate_output.ipynb")
+logger.info("Done. In order to inspect the output use evaluate_output.ipynb")

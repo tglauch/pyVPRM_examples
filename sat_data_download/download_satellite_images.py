@@ -42,7 +42,9 @@ for year in years:
     savepath = os.path.join(cfg["sat_image_path"], str(year))
     if cfg["satellite"] == "modis":
         for i in hvs:
+
             logger.info("Tile {}".format(i))
+
             handler = modis()
             try:
                 handler.download(
@@ -59,7 +61,9 @@ for year in years:
 
     elif cfg["satellite"] == "viirs":
         for i in hvs:
+
             logger.info("Tile {}".format(i))
+
             handler = VIIRS()
             try:
                 handler.download(

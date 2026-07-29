@@ -8,7 +8,7 @@ from pyVPRM.lib.functions import (
     add_corners_to_1d_grid,
     parse_wrf_grid_file,
 )
-from pyVPRM.VPRM import vprm
+from pyVPRM.VPRM import vprm_preprocessor
 import yaml
 import glob
 import time
@@ -65,6 +65,7 @@ hvs = np.unique(
     ],
     axis=0,
 )
+
 logger.info(hvs)
 insts = []
 
@@ -75,20 +76,18 @@ days = [datetime(this_year, 1, 1) + timedelta(days=i) for i in np.arange(365.0)]
 
 # read the data
 for c, i in enumerate(hvs):
-
-    logger.info(i)
-
+    print(i)
     # Note: There is no need to convert MODIS HDF4 into Netcdf files. You can also use HDF4 files directly.
     file_collections = glob.glob(
-        os.path.join(cfg["sat_image_path"], "*h{:02d}v{:02d}*.nc".format(i[0], i[1]))
+        os.path.join(cfg["sat_image_path"], "*h{:02d}v{:02d}*.hdf".format(i[0], i[1]))
     )
 
     if len(file_collections) == 0:
         continue
 
-    new_inst = vprm(
+    new_inst = vprm_preprocessor(
         vprm_config_path=os.path.join(
-            pyVPRM.__path__[0], "vprm_configs/copernicus_land_cover.yaml"
+            pyVPRM.__path__[0], "vprm_configs/copernicus_land_cover_wrf.yaml"
         ),
         n_cpus=args.n_cpus,
     )
@@ -123,35 +122,34 @@ for c, i in enumerate(hvs):
         handler.crop_box(b)
 
         # Add satellite image to VPRM instance
-        if cfg["satellite"] == "modis":
-            new_inst.add_sat_img(
-                handler,
-                b_nir="sur_refl_b02",
-                b_red="sur_refl_b01",
-                b_blue="sur_refl_b03",
-                b_swir="sur_refl_b06",
-                which_evi="evi",
-                drop_bands=True,
-                timestamp_key="sur_refl_day_of_year",
-                mask_bad_pixels=True,
-                mask_clouds=True,
-            )
-        elif cfg["satellite"] == "viirs":
-            new_inst.add_sat_img(
-                handler,
-                b_nir="SurfReflect_I2",
-                b_red="SurfReflect_I1",
-                b_blue="no_blue_sensor",
-                b_swir="SurfReflect_I3",
-                which_evi="evi2",
-                drop_bands=True,
-            )
 
+        if cfg['satellite'] == 'modis':
+            new_inst.add_sat_img(handler, b_nir='sur_refl_b02', b_red='sur_refl_b01',
+                                  b_blue='sur_refl_b03', b_swir='sur_refl_b06',
+                                  satellite_indices=['evi', 'lswi'],
+                                  drop_bands=True,
+                                  timestamp_key='sur_refl_day_of_year',
+                                  mask_bad_pixels=True,
+                                  mask_clouds=True) 
+        elif cfg['satellite'] == 'viirs':
+            new_inst.add_sat_img(handler, b_nir='SurfReflect_I2', b_red='SurfReflect_I1',
+                                  b_blue='no_blue_sensor', b_swir='SurfReflect_I3',
+                                  satellite_indices=['evi2', 'lswi'],
+                                  drop_bands=True)
+           
     # Sort and merge satellite images
     new_inst.sort_and_merge_by_timestamp()
 
     # Apply lowess smoothing in time
-    new_inst.lowess(keys=["evi", "lswi"], times=days, frac=0.25, it=3)  # 0.2
+
+
+    # new_inst.lowess(keys=['evi', 'lswi'],
+    #                times=days,
+    #                frac=0.25, it=3) #0.2
+
+    # Better use Kalman
+    new_inst.kalman(keys=['evi', 'lswi'],
+                     times=days)
 
     # Clip EVI and LSWI to the allowed range
     new_inst.clip_values("evi", 0, 1)
@@ -218,6 +216,7 @@ regridder_path = os.path.join(
 )
 
 # Use all the information in the VPRM instance to generate the WRF input files
+
 logger.info("Create regridder")
 wrf_op = vprm_inst.to_wrf_output(
     out_grid,
@@ -251,6 +250,5 @@ for key in wrf_op.keys():
         t[~np.isfinite(t)] = 0
         wrf_op[key][key].loc[{"vprm_classes": 8}] = t
     wrf_op[key].to_netcdf(ofile)
-
 
 logger.info("Done. In order to inspect the output use evaluate_wrf_input.ipynb")

@@ -1,8 +1,10 @@
 This script runs VPRM predictions for a region around Munich using MODIS satellite data, the corpernicus land cover map, and ERA5 meteorological data. 
 
-The data have been preprocessed to save memory space, but this does not chance anything to the analysis procedure, which is commentend in detail in the script.
+The data have been preprocessed to save memory space, but this does not change anything to the analysis procedure, which is commented in detail in the script.
 
-The file can be run with:
+The example script provides to options for using the meteorology. Either some preprocessed ERA5 data stored under './data' for common usage it is, however, more reasonable to fetch the data from an external source. Therefore we also provide the option to run the script with ERA5 query from the destination Earth platform https://platform.destine.eu/. To fetch data from destination Earth a registration and an API key are needed which has to be stored via 'export EARTHDATAHUB_PAT=edh_key_some_numbers_and_letters'
+
+The example script can be run with:
 
 python make_vprm_predictions.py --h 18 --v 4 --config ./configs/config_muc.cfg --year 2022
 

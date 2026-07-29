@@ -4,10 +4,10 @@ import pyVPRM
 from pyVPRM.sat_managers.viirs import VIIRS
 from pyVPRM.sat_managers.modis import modis
 from pyVPRM.sat_managers.copernicus import copernicus_land_cover_map
-from pyVPRM.VPRM import vprm
-from pyVPRM.meteorologies import era5_monthly_xr, era5_class_dkrz
+from pyVPRM.VPRM import vprm_preprocessor 
+from pyVPRM.meteorologies import era5_monthly_xr, era5_land_destinE_new
 from pyVPRM.lib.functions import lat_lon_to_modis
-from pyVPRM.vprm_models import vprm_modified, vprm_base
+from pyVPRM.vprm_models import vprm_modified_model, vprm_base_model
 import glob
 import time
 import yaml
@@ -51,6 +51,7 @@ p.add_argument("--config", type=str)
 p.add_argument("--n_cpus", type=int, default=1)
 p.add_argument("--year", type=int)
 args = p.parse_args()
+
 logger.info("Run with args: " + str(args))
 
 h = args.h
@@ -68,7 +69,7 @@ if not os.path.exists(cfg["predictions_path"]):
 
 
 # Initialize VPRM instance with the copernicus land cover config
-vprm_inst = vprm(
+vprm_inst = vprm_preprocessor(
     vprm_config_path=os.path.join(
         pyVPRM.__path__[0], "vprm_configs/copernicus_land_cover.yaml"
     ),
@@ -78,7 +79,7 @@ vprm_inst = vprm(
 # Note: There is no need to convert HDF4 into Netcdf files. You can also use HDF4 files directly.
 files = glob.glob(
     os.path.join(
-        cfg["sat_image_path"], "*h{:02d}v{:02d}*.nc".format(h, v)  # str(args.year),
+        cfg["sat_image_path"], "*h{:02d}v{:02d}*.hdf".format(h, v)  # str(args.year),
     )
 )
 
@@ -86,25 +87,25 @@ files = glob.glob(
 for c, i in enumerate(sorted(files)):
     if ".xml" in i:
         continue
-    logger.info(i)
+    print(i)
     if cfg["satellite"] == "modis":
         handler = modis(sat_image_path=i)
         handler.load()
-        vprm_inst.add_sat_img(
-            handler,
-            b_nir="sur_refl_b02",
-            b_red="sur_refl_b01",
-            b_blue="sur_refl_b03",
-            b_swir="sur_refl_b06",
-            which_evi="evi",
-            drop_bands=True,
-            timestamp_key="sur_refl_day_of_year",
-            mask_bad_pixels=True,
-            mask_clouds=True,
-        )
+        if handler.sat_img.rio.crs is None:
+            handler.sat_img = handler.sat_img.rio.set_crs(handler.default_crs_str)
+
+        vprm_inst.add_sat_img(handler, b_nir='sur_refl_b02', b_red='sur_refl_b01',
+                              b_blue='sur_refl_b03', b_swir='sur_refl_b06',
+                              satellite_indices=['evi', 'lswi'],
+                              drop_bands=True,
+                              timestamp_key='sur_refl_day_of_year',
+                              mask_bad_pixels=True,
+                              mask_clouds=True)
     else:
         handler = VIIRS(sat_image_path=i)
         handler.load()
+        if handler.sat_img.rio.crs is None:
+            handler.sat_img = handler.sat_img.rio.set_crs(handler.default_crs_str)
         vprm_inst.add_sat_img(
             handler,
             b_nir="SurfReflect_I2",
@@ -113,11 +114,20 @@ for c, i in enumerate(sorted(files)):
             b_swir="SurfReflect_I3",
             which_evi="evi2",
             drop_bands=True,
+            satellite_indices=["evi2", "lswi"],
         )
 
 # Sort the satellite data by time and run the lowess smoothing
 vprm_inst.sort_and_merge_by_timestamp()
-vprm_inst.lowess(keys=["evi", "lswi"], times="daily", frac=0.2, it=3)
+
+# vprm_inst.lowess(keys=['evi', 'lswi'],
+#                  times='daily',
+#                  frac=0.2, it=3)
+
+# Better use Kalman
+vprm_inst.kalman(keys=['evi', 'lswi'],
+                 times='daily')
+
 
 # Clip EVI and LSWI values to allows ranges
 vprm_inst.clip_values("evi", 0, 1)
@@ -133,10 +143,16 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
     # Generate a copernicus_land_cover_map instance
     thandler = copernicus_land_cover_map(c)
     thandler.load()
-    bounds = vprm_inst.prototype.sat_img.rio.transform_bounds(thandler.sat_img.rio.crs)
+    bounds = vprm_inst.prototype_satellite_manager.sat_img.rio.transform_bounds(
+        thandler.sat_img.rio.crs
+    )
 
     # Check overlap with our satellite images
-    dj = rasterio.coords.disjoint_bounds(bounds, thandler.sat_img.rio.bounds())
+    # TODO: rasterio.coords.disjoint_bounds requires cartesian coords
+    # (https://rasterio.readthedocs.io/en/stable/api/rasterio.coords.html#module-rasterio.coords)
+    # raise an error here if the bounding coords are not projected
+    bounds_lcm = thandler.sat_img.rio.transform_bounds(vprm_inst.prototype.sat_img.rio.crs)
+    dj = rasterio.coords.disjoint_bounds(bounds, bounds_lcm)
     if dj:
         logger.info("Do not add {}".format(c))
         continue
@@ -151,7 +167,9 @@ for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
 geom = box(*vprm_inst.sat_imgs.sat_img.rio.bounds())
 df = gpd.GeoDataFrame({"id": 1, "geometry": [geom]})
 df = df.set_crs(vprm_inst.sat_imgs.sat_img.rio.crs)
-df = df.scale(1.3, 1.3)
+df = df.set_geometry(df.scale(1.3, 1.3))
+df = transform_geodataframe(gdf=df, src_crs=df.crs, dst_crs=lcm.sat_img.rio.crs)
+
 lcm.crop_to_polygon(df)
 
 # Add land cover map to the VPRM instance. This wil regrid the land cover map to the satellite grid
@@ -162,15 +180,42 @@ vprm_inst.add_land_cover_map(
 )
 
 # Set meteorology
-era5_inst = era5_monthly_xr.met_data_handler(
-    args.year, 1, 1, 0, "./data/era5", keys=["t2m", "ssrd"]
-)
+
+
+# era5_inst = era5_monthly_xr.met_data_handler(year=args.year,
+#                                              month=1, 
+#                                              day=1,
+#                                              hour=0,
+#                                              bpath='./data/era5',
+#                                              keys=['t2m', 'ssrd']) 
+
+
+# reproject the scaled geometry to EPSG:4326 to get genuine lat/lon bounds
+
+df_4326 = df.to_crs(epsg=4326)
+lon_min, lat_min, lon_max, lat_max = df_4326.total_bounds
+
+lat_slice = [lat_min, lat_max]
+lon_slice = [lon_min, lon_max]
+
+token = os.environ.get("EARTHDATAHUB_PAT")
+if not token:
+    raise EnvironmentError(
+        "Required environment variable 'EARTHDATAHUB_PAT' is not set. See .env.example."
+    )
+
+era5_inst = era5_land_destinE_new.met_data_handler(PAT=token,
+                                                   t0=pd.to_datetime('{}-12-30'.format(args.year-1)),
+                                                   t1=pd.to_datetime('{}-01-02'.format(args.year+1)),
+                                                   lat_slice=lat_slice,
+                                                   lon_slice=lon_slice,
+                                                   keys=['t2m', 'ssrd'])
 
 # Load VPRM parameters from a dictionary
 with open(cfg["vprm_params_dict"], "rb") as ifile:
     res_dict = pickle.load(ifile)
 
-vprm_model = vprm_base.vprm_base(
+vprm_model = vprm_base_model.vprm_base_model(
     vprm_pre=vprm_inst, met=era5_inst, fit_params_dict=res_dict
 )
 

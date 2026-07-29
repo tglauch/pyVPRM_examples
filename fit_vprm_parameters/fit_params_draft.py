@@ -38,6 +38,7 @@ if not os.path.exists(cfg["out_path"]):
     os.makedirs(cfg["out_path"])
 
 outfile = os.path.join(cfg["out_path"], "h{}v{}_{}.pickle".format(h, v, cfg["year"]))
+
 logger.info(outfile)
 
 
@@ -56,7 +57,9 @@ vprm_inst = vprm(n_cpus=args.n_cpus)
 for c, i in enumerate(
     glob.glob(os.path.join(cfg["sat_image_path"], "*h{:02d}v{:02d}*.h*".format(h, v)))
 ):
+
     logger.info(i)
+
     if cfg["satellite"] == "modis":
         handler = modis(sat_image_path=i)
         handler.load()

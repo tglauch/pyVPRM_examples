@@ -2,6 +2,7 @@ import argparse, os, time
 import os, time, sys
 import yaml
 from datetime import datetime, timedelta, date
+
 sys.path.append("/work/mj0143/b301034/Scrapbook_Analysis/Projects/pyVPRM/pyVPRM")
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sat_managers.lads_downloader import EarthdataLAADS
@@ -18,16 +19,24 @@ args = p.parse_args()
 dl = EarthdataLAADS(product=args.product)
 
 # build list of DOYs for that year (46 DOYs) using your class helper:
-start = datetime(args.year,1,1)
-end = datetime(args.year,12,31)
-doys = [int(doy) for dt, doy in dl._generate_modis_doys(start,end)]
+start = datetime(args.year, 1, 1)
+end = datetime(args.year, 12, 31)
+doys = [int(doy) for dt, doy in dl._generate_modis_doys(start, end)]
+
 
 def job_for_doy(doy):
-    return dl.download_doy(year=args.year, doy=doy, savepath=os.path.join(args.output,str(args.year)),
-                           token=args.token, tile=args.tile, resume=True)
+    return dl.download_doy(
+        year=args.year,
+        doy=doy,
+        savepath=os.path.join(args.output, str(args.year)),
+        token=args.token,
+        tile=args.tile,
+        resume=True,
+    )
+
 
 with ThreadPoolExecutor(max_workers=args.workers) as ex:
-    futures = { ex.submit(job_for_doy, doy): doy for doy in doys }
+    futures = {ex.submit(job_for_doy, doy): doy for doy in doys}
     for fut in as_completed(futures):
         doy = futures[fut]
         try:

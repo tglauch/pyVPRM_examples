@@ -139,46 +139,34 @@ vprm_inst.calc_min_max_evi_lswi()
 
 # Add land covery map(s) by iterating over all maps in the `copernicus path` and picking those that overlap with our satellite images
 lcm = None
-for c in glob.glob(os.path.join(cfg["copernicus_path"], "*")):
+for c in glob.glob(os.path.join(cfg['copernicus_path'], '*')):
     # Generate a copernicus_land_cover_map instance
     thandler = copernicus_land_cover_map(c)
     thandler.load()
-    bounds = vprm_inst.prototype_satellite_manager.sat_img.rio.transform_bounds(
-        thandler.sat_img.rio.crs
-    )
+    bounds = vprm_inst.prototype_satellite_manager.sat_img.rio.transform_bounds(thandler.sat_img.rio.crs)
 
     # Check overlap with our satellite images
-    # TODO: rasterio.coords.disjoint_bounds requires cartesian coords
-    # (https://rasterio.readthedocs.io/en/stable/api/rasterio.coords.html#module-rasterio.coords)
-    # raise an error here if the bounding coords are not projected
-    bounds_lcm = thandler.sat_img.rio.transform_bounds(vprm_inst.prototype.sat_img.rio.crs)
-    dj = rasterio.coords.disjoint_bounds(bounds, bounds_lcm)
+    dj = rasterio.coords.disjoint_bounds(bounds, thandler.sat_img.rio.bounds())
     if dj:
-        logger.info("Do not add {}".format(c))
+        print('Do not add {}'.format(c))
         continue
-    logger.info("Add {}".format(c))
+    print('Add {}'.format(c))
     if lcm is None:
-        lcm = copernicus_land_cover_map(c)
+        lcm=copernicus_land_cover_map(c)
         lcm.load()
     else:
         lcm.add_tile(thandler, reproject=False)
 
 # Crop land cover map to the extend of our satellite images (to speed up computations and save memory)
 geom = box(*vprm_inst.sat_imgs.sat_img.rio.bounds())
-df = gpd.GeoDataFrame({"id": 1, "geometry": [geom]})
+df = gpd.GeoDataFrame({"id":1,"geometry":[geom]})
 df = df.set_crs(vprm_inst.sat_imgs.sat_img.rio.crs)
-df = df.set_geometry(df.scale(1.3, 1.3))
-df = transform_geodataframe(gdf=df, src_crs=df.crs, dst_crs=lcm.sat_img.rio.crs)
-
+df = df.scale(1.3, 1.3)
 lcm.crop_to_polygon(df)
 
 # Add land cover map to the VPRM instance. This wil regrid the land cover map to the satellite grid
-vprm_inst.add_land_cover_map(
-    lcm,
-    regridder_save_path=os.path.join(cfg["predictions_path"], "regridder.nc"),
-    mpi=False,
-)
-
+vprm_inst.add_land_cover_map(lcm, regridder_save_path=os.path.join(cfg['predictions_path'],
+                                                                   'regridder.nc'), mpi=False)
 # Set meteorology
 
 

@@ -172,28 +172,26 @@ if not os.path.exists(cfg["out_path"]):
 
 # Add the land cover map and perform regridding to the satellite grid
 logger.info("Generate land cover map")
-veg_file = os.path.join(
-    cfg["out_path"], "veg_map_on_modis_grid_{}_{}.nc".format(args.chunk_x, args.chunk_y)
-)
+veg_file = os.path.join(cfg['out_path'], 'veg_map_on_modis_grid_{}_{}.nc'.format(args.chunk_x,
+                                                                                 args.chunk_y))
 if os.path.exists(veg_file):
     vprm_inst.add_land_cover_map(veg_file)
 else:
-    regridder_path = os.path.join(
-        cfg["out_path"], "regridder_{}_{}_lcm.nc".format(args.chunk_x, args.chunk_y)
-    )
+    regridder_path = os.path.join(cfg['out_path'], 'regridder_{}_{}_lcm.nc'.format(args.chunk_x,
+                                                                                   args.chunk_y))
     handler_lt = None
-    copernicus_data_path = cfg["copernicus_path"]
+    copernicus_data_path = cfg['copernicus_path']
 
     if copernicus_data_path is not None:
         tiles_to_add = []
-        for i, c in enumerate(glob.glob(os.path.join(copernicus_data_path, "*"))):
-            logger.info(c)
+        for i, c in enumerate(glob.glob(os.path.join(copernicus_data_path, '*'))):
+            print(c)
             temp_map = copernicus_land_cover_map(c)
             temp_map.load()
             dj = vprm_inst.is_disjoint(temp_map)
             if dj:
                 continue
-            logger.info("Add {}".format(c))
+            print('Add {}'.format(c))
             if handler_lt is None:
                 handler_lt = temp_map
             else:
@@ -203,28 +201,22 @@ else:
 
         # Crop the land cover map to the extend of our (cropped) satellite images to save memory
         geom = box(*vprm_inst.sat_imgs.sat_img.rio.bounds())
-        df = gpd.GeoDataFrame({"id": 1, "geometry": [geom]})
+        df = gpd.GeoDataFrame({"id":1,"geometry":[geom]})
         df = df.set_crs(vprm_inst.sat_imgs.sat_img.rio.crs)
         df = df.scale(1.2, 1.2)
-        handler_lt.crop_to_polygon(df)
-        vprm_inst.add_land_cover_map(
-            handler_lt, save_path=veg_file, regridder_save_path=regridder_path
-        )
+        handler_lt.crop_to_polygon(df) 
+        vprm_inst.add_land_cover_map(handler_lt, save_path=veg_file,
+                                     regridder_save_path=regridder_path,
+                                      mpi=False)
 
-regridder_path = os.path.join(
-    cfg["out_path"], "regridder_{}_{}.nc".format(args.chunk_x, args.chunk_y)
-)
+regridder_path = os.path.join(cfg['out_path'], 'regridder_{}_{}.nc'.format(args.chunk_x,
+                                                                            args.chunk_y))
 
 # Use all the information in the VPRM instance to generate the WRF input files
-
-logger.info("Create regridder")
-wrf_op = vprm_inst.to_wrf_output(
-    out_grid,
-    driver="xEMSF",  # currently only xESMF works here when the WRF grid is 2D
-    regridder_save_path=regridder_path,
-    mpi=False,
-)
-
+logger.info('Create regridder')
+wrf_op = vprm_inst.to_wrf_output(out_grid, driver = 'xESMF', # currently only xESMF works here when the WRF grid is 2D 
+                                 regridder_save_path=regridder_path,
+                                 mpi=False)
 # Save to NetCDF files
 file_base = "VPRM_input_"
 filename_dict = {

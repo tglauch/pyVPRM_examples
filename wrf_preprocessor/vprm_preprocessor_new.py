@@ -1,4 +1,7 @@
 import os
+import sys
+sys.path.insert(0,'/dss/dsshome1/08/di35yuh/lib/')
+sys.path.insert(0,'/dss/dsshome1/08/di35yuh/pyvprm_tests/pyVPRM/')
 import pyVPRM
 from pyVPRM.sat_managers.viirs import VIIRS
 from pyVPRM.sat_managers.modis import modis
@@ -103,7 +106,7 @@ for c, i in enumerate(hvs):
         if cfg['satellite'] == 'modis':
             new_inst.add_sat_img(handler, b_nir='sur_refl_b02', b_red='sur_refl_b01',
                                   b_blue='sur_refl_b03', b_swir='sur_refl_b06',
-                                  which_evi='evi',
+                                  satellite_indices=['evi', 'lswi'],
                                   drop_bands=True,
                                   timestamp_key='sur_refl_day_of_year',
                                   mask_bad_pixels=True,
@@ -111,16 +114,21 @@ for c, i in enumerate(hvs):
         elif cfg['satellite'] == 'viirs':
             new_inst.add_sat_img(handler, b_nir='SurfReflect_I2', b_red='SurfReflect_I1',
                                   b_blue='no_blue_sensor', b_swir='SurfReflect_I3',
-                                  which_evi='evi2',
+                                  satellite_indices=['evi2', 'lswi'],
                                   drop_bands=True)
            
     # Sort and merge satellite images
     new_inst.sort_and_merge_by_timestamp()
     
     # Apply lowess smoothing in time
-    new_inst.lowess(keys=['evi', 'lswi'],
-                   times=days,
-                   frac=0.25, it=3) #0.2
+    # new_inst.lowess(keys=['evi', 'lswi'],
+    #                times=days,
+    #                frac=0.25, it=3) #0.2
+
+    # Better use Kalman
+    new_inst.kalman(keys=['evi', 'lswi'],
+                     times=days)
+
 
     # Clip EVI and LSWI to the allowed range
     new_inst.clip_values('evi', 0, 1)

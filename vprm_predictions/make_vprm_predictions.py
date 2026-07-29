@@ -4,8 +4,8 @@ import pyVPRM
 from pyVPRM.sat_managers.viirs import VIIRS
 from pyVPRM.sat_managers.modis import modis
 from pyVPRM.sat_managers.copernicus import copernicus_land_cover_map
-from pyVPRM.VPRM import vprm_preprocessor
-from pyVPRM.meteorologies import era5_monthly_xr, era5_class_dkrz
+from pyVPRM.VPRM import vprm_preprocessor 
+from pyVPRM.meteorologies import era5_monthly_xr, era5_land_destinE_new
 from pyVPRM.lib.functions import lat_lon_to_modis
 from pyVPRM.vprm_models import vprm_modified_model, vprm_base_model
 import glob
@@ -91,19 +91,14 @@ for c, i in enumerate(sorted(files)):
         handler.load()
         if handler.sat_img.rio.crs is None:
             handler.sat_img = handler.sat_img.rio.set_crs(handler.default_crs_str)
-        vprm_inst.add_sat_img(
-            handler,
-            b_nir="sur_refl_b02",
-            b_red="sur_refl_b01",
-            b_blue="sur_refl_b03",
-            b_swir="sur_refl_b06",
-            which_evi="evi",
-            drop_bands=True,
-            timestamp_key="sur_refl_day_of_year",
-            mask_bad_pixels=True,
-            mask_clouds=True,
-            satellite_indices=["evi", "lswi"],
-        )
+
+        vprm_inst.add_sat_img(handler, b_nir='sur_refl_b02', b_red='sur_refl_b01',
+                              b_blue='sur_refl_b03', b_swir='sur_refl_b06',
+                              satellite_indices=['evi', 'lswi'],
+                              drop_bands=True,
+                              timestamp_key='sur_refl_day_of_year',
+                              mask_bad_pixels=True,
+                              mask_clouds=True)
     else:
         handler = VIIRS(sat_image_path=i)
         handler.load()
@@ -122,7 +117,16 @@ for c, i in enumerate(sorted(files)):
 
 # Sort the satellite data by time and run the lowess smoothing
 vprm_inst.sort_and_merge_by_timestamp()
-vprm_inst.lowess(keys=["evi", "lswi"], times="daily", frac=0.2, it=3)
+
+
+# vprm_inst.lowess(keys=['evi', 'lswi'],
+#                  times='daily',
+#                  frac=0.2, it=3)
+
+# Better use Kalman
+vprm_inst.kalman(keys=['evi', 'lswi'],
+                 times='daily')
+
 
 # Clip EVI and LSWI values to allows ranges
 vprm_inst.clip_values("evi", 0, 1)
@@ -169,9 +173,35 @@ vprm_inst.add_land_cover_map(
 )
 
 # Set meteorology
-era5_inst = era5_monthly_xr.met_data_handler(
-    args.year, 1, 1, 0, "./data/era5", keys=["t2m", "ssrd"]
-)
+
+# era5_inst = era5_monthly_xr.met_data_handler(year=args.year,
+#                                              month=1, 
+#                                              day=1,
+#                                              hour=0,
+#                                              bpath='./data/era5',
+#                                              keys=['t2m', 'ssrd']) 
+
+
+# reproject the scaled geometry to EPSG:4326 to get genuine lat/lon bounds
+
+df_4326 = df.to_crs(epsg=4326)
+lon_min, lat_min, lon_max, lat_max = df_4326.total_bounds
+
+lat_slice = [lat_min, lat_max]
+lon_slice = [lon_min, lon_max]
+
+token = os.environ.get("EARTHDATAHUB_PAT")
+if not token:
+    raise EnvironmentError(
+        "Required environment variable 'EARTHDATAHUB_PAT' is not set. See .env.example."
+    )
+
+era5_inst = era5_land_destinE_new.met_data_handler(PAT=token,
+                                                   t0=pd.to_datetime('{}-12-30'.format(args.year-1)),
+                                                   t1=pd.to_datetime('{}-01-02'.format(args.year+1)),
+                                                   lat_slice=lat_slice,
+                                                   lon_slice=lon_slice,
+                                                   keys=['t2m', 'ssrd'])
 
 # Load VPRM parameters from a dictionary
 with open(cfg["vprm_params_dict"], "rb") as ifile:

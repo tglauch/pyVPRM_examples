@@ -1,0 +1,187 @@
+# =====================================================================
+# USER-FACING SETTINGS
+# Things you'll actually change from run to run. Secrets are never
+# stored here
+# =====================================================================
+
+site:
+  id: DK-RCW
+  t_start: "2023-01-01"
+  t_stop: "2024-12-31"
+
+model:
+  version: "pyvprnn_v1"
+  vprm_config_path: null
+  
+satellite:
+  # Which imagery source to build VPRM indices from. Each source has its
+  # own block under advanced.satellite.<source> (band names, indices,
+  # cloud/quality masking, STAC endpoint, etc). To add a new source,
+  # see the docstring at the top of satellite_sources.py.
+  source: "sentinel2"   # "sentinel2" | "modis" (modis not yet implemented)
+
+footprint:
+  fetch_percentile: 0.90   # footprint mass fraction used to size the domain
+  min_size_m: 400
+  max_size_m: 3000
+
+land_cover:
+  overwrite_cache: false   # if false, skip regridding when cached files exist
+
+compute:
+  n_cpus: 128
+  n_chunks: 50
+
+plotting:
+  enabled: true
+
+paths:
+  fluxnet_data_dir: "./siteData"
+  sentinel_tile_shapefile: "./data/sentinel_2_index_shapefile.shp"
+  copernicus_land_cover_tif: "./data/PROBAV_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif"
+  output_base_dir: "./out"
+  training_data_filename: "training_data.nc"
+  figures_dir: "./out/figures"
+  canopy_height: "./canopy_height"
+
+training:
+  kfold: 1
+  val_frac: 0.15
+  test_frac: 0.0
+  nee_qc_flags: [0, 1, 2, 3]
+  random_seed: 42
+  # Adds NaN/Inf checking to every op - useful when debugging but noticeably
+  # slows down training. Leave off for normal runs.
+  enable_check_numerics: false
+  batch_size: 64
+  epochs: 500
+  max_runtime_hours: 7.0
+  patience: 20
+  plateau_patience: 10
+  learning_rate: 3.0e-4
+  workers: 1
+  multiprocessing: false
+  max_queue_size: 4
+  loss: "nll_loss_from_stacked" #"mse"
+ 
+evaluation:
+  fold: 0
+  aggregate_folds: false
+  inference_batch_size: 64
+  example_batch_index: 0
+  # Radius (km) cropped around the tower for the pixel-level PDP/ICE plot.
+  # 0.02 km = 20 m - roughly one Sentinel-2 pixel.
+  pdp_crop_radius_km: 0.02
+  diurnal_min_valid_days: 10
+  # FLUXNET data here is half-hourly - this must match your actual time
+  # resolution or the per-year completeness filter will be wrong.
+  diurnal_obs_per_day: 48
+
+# =====================================================================
+# ADVANCED SETTINGS
+# Fixed properties of external datasets (band names, class codes, STAC
+# endpoints) and numerical tuning parameters that rarely need touching.
+# Edit only if you know why - e.g. a data provider changes an endpoint,
+# or you're tuning the Kalman filter.
+# =====================================================================
+
+advanced:
+
+  footprint:
+    ffp_resolution_m: 10   # FFP calculation grid resolution
+
+  satellite:
+
+    sentinel2:
+      collection: "sentinel-2-l2a"
+      stac_endpoint: "https://earth-search.aws.element84.com/v1"
+      resolution_m: 20
+      cloud_cover_max_pct: 90
+      search_buffer_days: 120       # extra days searched before/after tower record
+      crop_buffer_factor: 1.2       # extra radius (relative to footprint) kept after crop
+      bands: ["red", "green", "blue", "nir08", "swir16", "rededge2", "scl"]
+      quality_band: "scl"
+      band_map:
+        nir: "nir08"
+        red: "red"
+        blue: "blue"
+        swir: "swir16"
+        red_edge: "rededge2"
+      indices: ["ndre", "nirv", "lswi", "evi2", "evi"]   # ndre needs red_edge
+
+      # Sentinel-2 Scene Classification Layer (SCL) class codes, per ESA's
+      # L2A product spec (https://sentiwiki.copernicus.eu -> Scene
+      # Classification). Named here so the masking logic below reads as
+      # "vegetation/water" rather than bare integers.
+      scl_classes:
+        vegetation: 4
+        not_vegetated: 5
+        water: 6
+      # Per pixel, across the whole time series, we take whichever of these
+      # three classes occurs most often ("dominant class"). Pixels whose
+      # dominant class is water are then masked out of the vegetation
+      # indices (see mask_sentinel2() in satellite_sources.py).
+      dominant_class_pool: ["vegetation", "not_vegetated", "water"]
+      water_class: "water"
+      rgb_quicklook_valid_class: "vegetation"
+
+    modis:
+      # NOT YET IMPLEMENTED - see fetch_modis_stack()/mask_modis() in
+      # satellite_sources.py for what needs filling in (STAC collection,
+      # e.g. Planetary Computer's modis-09A1-061/modis-13Q1-061, plus a
+      # pyVPRM.sat_managers.modis handler mirroring the sentinel2 one).
+      collection: null
+      stac_endpoint: null
+      resolution_m: 500
+      band_map:
+        nir: null
+        red: null
+        blue: null
+        swir: null
+        red_edge: null   # MODIS has no red-edge band - keep null
+      bands: []
+      indices: []        # must exclude "ndre" (requires red_edge)
+
+  land_cover:
+    esa_worldcover_stac_endpoint: "https://planetarycomputer.microsoft.com/api/stac/v1"
+
+    # --- Hybrid evergreen/deciduous reconciliation -----------------------
+    # ESA WorldCover's "tree cover" class doesn't distinguish evergreen vs.
+    # deciduous forest. Where the tower metadata says the site is forested
+    # (ENF/EBF/DBF), we cross-reference the coarser but class-specific
+    # Copernicus map to decide which of the two it actually is. This whole
+    # block is ONLY needed because we're building that hybrid map - if you
+    # ever switch to a single land-cover source, delete this block and
+    # reconcile_land_cover_classes() together.
+    hybrid_reconciliation:
+      esa_tree_cover_class: 10     # ESA WorldCover's generic "tree cover" code
+      vprm_evergreen_class: 1      # pyVPRM's internal evergreen code
+      vprm_deciduous_class: 2      # pyVPRM's internal deciduous code
+
+    # Small buffer applied when reprojecting the crop geometry, so it fully
+    # covers the Copernicus tile after reprojection rounding. Not physically
+    # meaningful - only change if you see edge-pixel gaps in lcm2_high_res.
+    copernicus_geom_scale_factor: 1.22
+
+  kalman:
+    transition_covariance: 0.003
+    observation_covariance: 0.15
+
+  meteorology:
+    footprint_met_vars: ["blh"]           # only used for the FFP model
+    era5_single_level_product: "era5_single_level"
+    full_met_vars:
+      ssrd: {op: "div", value: 3600}
+      t2m:  {op: "sub_kelvin"}
+      skt:  {op: "sub_kelvin"}
+      swvl1: {op: "none"}
+      swvl2: {op: "none"}
+      e:    {op: "mul", value: 1.0e+4}
+      d2m:  {op: "sub_kelvin"}
+      stl1: {op: "sub_kelvin"}
+      stl2: {op: "sub_kelvin"}
+    lat_lon_slice_km: 100
+
+  plotting:
+    quicklook_dpi: 300
+    example_plot_dpi: 500

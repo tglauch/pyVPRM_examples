@@ -7,4 +7,12 @@ To get things running you need:
 
 After data collection update the config.yaml accordingly and run via 
 
-1. python run_vprm_pipeline.py --config config.yaml
+1. **Generation of the Training Dataset**: python run_vprm_pipeline.py --config config.yaml
+2. **Training and Quick-Look Evaluation**: python train_and_evaluate.py --config config.yaml (Note that by default the training time is only set to a few minutes in the config files. Change via training->max_runtime_hours)
+
+General Considerations:
+
+1. The generation of the training dataset is faster if you use multi-processing by setting a larger number of cpus via compute->n_cpus. Also make sure sufficient memory is available as the generation of hourly footprints on the satellite grid is very memory intensive. For larger site use an HPC with >128GB RAM per node.
+2. For the training make sure you are running on a node with available GPU to allow for fast training of the neural network.
+
+

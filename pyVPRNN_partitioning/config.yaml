@@ -8,6 +8,9 @@ site:
   id: DK-RCW
   t_start: "2023-01-01"
   t_stop: "2024-12-31"
+  # Leave measurement height usually as None as long as it is contained 
+  # in the flux tower data.
+  measurement_height: None
 
 model:
   version: "pyvprnn_v1"

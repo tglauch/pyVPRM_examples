@@ -1,10 +1,28 @@
-# Example scripts
-This repository contains a collection of example scripts for the usage of ```pyVPRM``` which can be installed from here 
-https://github.com/tglauch/pyVPRM/. To download the repository run
-```
+# pyVPRM Examples
+
+Example scripts demonstrating how to use [`pyVPRM`](https://github.com/tglauch/pyVPRM), covering everything from generating model inputs to full flux partitioning.
+
+## Installation
+
+First, install `pyVPRM` itself (see the [pyVPRM README](https://github.com/tglauch/pyVPRM) for details), then clone this repository:
+
+```bash
 git clone https://github.com/tglauch/pyVPRM_examples.git
 ```
 
-Currently only the scripts in ```./wrf_preprocessor``` and ```./vprm_predictions``` can be directly executed. Example files for running the VPRM fit, will be included soon. The files in ```./sat_data_download``` show exemplarily how ```pyVPRM``` can be used to download VIIRS and MODIS data. More information can be found in the README in the respective folders and the comments in the scripts. 
+## What's Inside
 
-Note: The example scripts come with a set of example data files. Hence the download of the repository requires around 100MB. The data have been only marginally pre-processed to limit the amount of memory required.
+| Folder | Description |
+|---|---|
+| [`vprm_predictions`](./vprm_predictions) | Run VPRM predictions of GPP, respiration, and NEE |
+| [`wrf_preprocessor`](./wrf_preprocessor) | Generate VPRM input files for use with WRF or ICON |
+| [`pyVPRNN_partitioning`](./pyVPRNN_partitioning) | Partition observed NEE into GPP and respiration using the process-informed neural network approach (pyVPRNN) |
+
+Each folder has its own README with setup instructions and requirements specific to that example — start there once you've picked the one relevant to your use case.
+
+## Related
+
+- Main package: [pyVPRM](https://github.com/tglauch/pyVPRM)
+- Method paper: [Glauch et al. (2025), *Geoscientific Model Development*](https://gmd.copernicus.org/articles/18/4713/2025/)
+
+Questions? Open an issue, or reach out to **theo.glauch@dlr.de**.

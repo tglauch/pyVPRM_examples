@@ -42,7 +42,7 @@ paths:
   output_base_dir: "./out"
   training_data_filename: "training_data.nc"
   figures_dir: "./out/figures"
-  canopy_height: "./canopy_height"
+  canopy_height: "./data/canopy_height"
 
 training:
   kfold: 1

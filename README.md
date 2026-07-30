@@ -28,3 +28,7 @@ Each folder has its own README with setup instructions and requirements specific
 - Method paper: [Glauch et al. (2025), *Geoscientific Model Development*](https://gmd.copernicus.org/articles/18/4713/2025/)
 
 Questions? Open an issue, or reach out to **theo.glauch@dlr.de**.
+
+## Repository Size
+
+This repository bundles some example data files to make the examples runnable more easily. As a result, cloning the full repository — including its git history — downloads >100 megabytes. 

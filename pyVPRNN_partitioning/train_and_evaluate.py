@@ -488,6 +488,8 @@ def main():
     # pixel_model_*.keras / training_history_*.csv.
     outpath = os.path.join(base_path, f"{model}{range_tag}")
     os.makedirs(outpath, exist_ok=True)
+    figure_dir = os.path.join(base_path, 'figures')
+    os.makedirs(figure_dir, exist_ok=True)
 
     # --- data ------------------------------------------------------------------
     pyvprnn_inst = load_training_dataset(base_path, cfg, t_start=args.t_start, t_stop=args.t_stop, model=model)
@@ -534,25 +536,24 @@ def main():
 
     plotting_functions.multi_panel_plot(
         pyvprnn_inst, example_batch["Xsat"], example_batch["batch_times"],
-        example_batch["predict"], os.path.join(outpath, "multi_panels.png"),
+        example_batch["predict"], os.path.join(figure_dir, "multi_panels.png"),
     )
     plotting_functions.comparison_to_dt_nt(
         saved_ds,
         gpp_key='{}_gpp'.format(model),
         reco_key='{}_reco'.format(model),
-        opath={"DT": os.path.join(cfg["paths"]["figures_dir"],
+        opath={"DT": os.path.join(figure_dir,
                                   "comparison_DT.png"),
-               "NT": os.path.join(cfg["paths"]["figures_dir"],
+               "NT": os.path.join(figure_dir,
                                   "comparison_NT.png")},
         nee_key="NEE_VUT_REF",
     )
 
-    os.makedirs(figures_dir, exist_ok=True)
-    make_diurnal_cycle_plot(saved_ds, cfg, site, os.path.join(cfg["paths"]["figures_dir"],
+    make_diurnal_cycle_plot(saved_ds, cfg, site, os.path.join(figure_dir,
                                                               "{site}_diurnal_cycle.png"), model=model)
     make_pdp_ice_plot(
         ds_cropped_path, cfg, site, primary_model_path,
-        os.path.join(figures_dir, "{site}_pdp.png"), model=model,
+        os.path.join(figure_dir, "{site}_pdp.png"), model=model,
     )
 
 

@@ -44,7 +44,6 @@ paths:
   copernicus_land_cover_tif: "./data/PROBAV_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif"
   output_base_dir: "./out"
   training_data_filename: "training_data.nc"
-  figures_dir: "./out/figures"
   canopy_height: "./data/canopy_height"
 
 training:
@@ -58,7 +57,7 @@ training:
   enable_check_numerics: false
   batch_size: 64
   epochs: 500
-  max_runtime_hours: 7.0
+  max_runtime_hours: 0.2
   patience: 20
   plateau_patience: 10
   learning_rate: 3.0e-4

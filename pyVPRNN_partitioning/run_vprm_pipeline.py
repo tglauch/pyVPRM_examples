@@ -509,6 +509,8 @@ def main():
     flux_tower_inst = load_flux_tower(cfg)
     base_path = site_base_path(cfg["paths"]["output_base_dir"], flux_tower_inst.land_cover_type, site)
     os.makedirs(base_path, exist_ok=True)
+    figure_dir = os.path.join(base_path, 'figures')
+    os.makedirs(figure_dir, exist_ok=True)
 
     load_flux_tower_data(flux_tower_inst, cfg, token)
 
@@ -519,13 +521,13 @@ def main():
     # --- satellite imagery ---------------------------------------------------
     cube, bbox, point = sat.fetch_satellite_stack(flux_tower_inst, footprint_size, cfg)
     if cfg["plotting"]["enabled"]:
-        save_rgb_quicklook(cube, cfg, os.path.join(cfg["paths"]["figures_dir"],
+        save_rgb_quicklook(cube, cfg, os.path.join(figure_dir,
                                                    "rgb_quicklook.png"))
 
     handler, vprm_inst = run_vprm_satellite_processing(cube, flux_tower_inst, footprint_size, cfg)
     sat.mask_satellite(handler, vprm_inst, cfg)
     if cfg["plotting"]["enabled"]:
-        save_nirv_quicklook(vprm_inst, cfg, os.path.join(cfg["paths"]["figures_dir"],
+        save_nirv_quicklook(vprm_inst, cfg, os.path.join(figure_dir,
                                                          "nirv_quicklook.png"))
 
     # --- land cover ------------------------------------------------------------
@@ -545,7 +547,7 @@ def main():
     save_training_dataset(pyvprnn_inst, os.path.join(base_path, cfg["paths"]['training_data_filename']))
 
     if cfg["plotting"]["enabled"]:
-        make_example_footprint_plot(pyvprnn_inst, cfg, os.path.join(cfg["paths"]["figures_dir"],
+        make_example_footprint_plot(pyvprnn_inst, cfg, os.path.join(figure_dir,
                                                                     f"{site}_example.png"))
 
 

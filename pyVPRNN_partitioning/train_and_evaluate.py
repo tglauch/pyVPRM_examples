@@ -37,6 +37,7 @@ from utils import (
     build_pyvprnn_kwargs,
     resolve_pyvprnn_model,
     make_generator,
+    build_fixed_footprint
 )
 
 logger = logging.getLogger("train_and_evaluate")
@@ -187,20 +188,31 @@ def train_or_load_folds(pyvprnn_inst, outpath, cfg):
 # Inference
 # ---------------------------------------------------------------------------
 
-def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1"):
+def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1", fixed_footprint=None):
     """
     Run the currently-loaded model over every timestep in ds_source (or
     pyvprnn_inst.ds_cropped if not given), aggregating each pixel-level
-    GPP/Reco map into a single footprint-weighted flux per timestep.
-
-    Returns (times_sorted, gpp_sorted, reco_sorted, example_batch) where
+    GPP/Reco map into a footprint-weighted flux per timestep.
+ 
+    If fixed_footprint is given (see build_fixed_footprint() in utils.py),
+    ALSO aggregates the same raw per-pixel maps using that static footprint
+    instead of the real time-varying one - this is a second aggregation of
+    the exact same model output, not a second inference pass, since the
+    footprint never feeds the model itself (it only post-processes the
+    predicted maps). Useful for testing how much of the footprint-weighted
+    output depends on the true, time-varying footprint shape versus a
+    naive fixed window around the tower.
+ 
+    Returns (times_sorted, results, example_batch) where results is a dict:
+        results["dynamic"] = (gpp_sorted, reco_sorted)          # always present
+        results["fixed"]   = (gpp_sorted, reco_sorted)          # only if fixed_footprint given
     example_batch is a fixed, explicitly-chosen batch (not "whatever batch
     happened to run last") suitable for the multi-panel diagnostic plot.
     """
     ds_cropped = ds_source if ds_source is not None else pyvprnn_inst.ds_cropped
     eval_cfg = cfg["evaluation"]
     _, _, is_lagged = resolve_pyvprnn_model(model)
-
+ 
     gen = make_generator(
         pyvprnn_inst, is_lagged,
         batch_size=eval_cfg["inference_batch_size"],
@@ -213,40 +225,62 @@ def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1"):
     # ds_cropped/ds_source above - if you need to run inference over a
     # dataset other than the instance's own ds_cropped, this needs
     # extending (not currently used anywhere with a non-None ds_source).
-
+ 
     times = pyvprnn_inst.common_times[gen.indexes]
-
+ 
     results_gpp, results_reco = [], []
+    results_gpp_fixed, results_reco_fixed = [], []
     example_batch = None
-
+ 
     for i in range(len(gen)):
         x, _ = gen[i]
         batch_times = gen.get_batch_times(i)
-
+ 
         if is_lagged:
             Xsat, Xstatic, Xmet, Xsw_in_pot, Xmet_lagged, footprint, flux_mask = x
             predict = pyvprnn_inst.pixel_model.predict_on_batch([Xsat, Xstatic, Xmet, Xsw_in_pot, Xmet_lagged, flux_mask])
         else:
             Xsat, Xstatic, Xmet, Xsw_in_pot, footprint, flux_mask = x
             predict = pyvprnn_inst.pixel_model.predict_on_batch([Xsat, Xstatic, Xmet, Xsw_in_pot, flux_mask])
-
+ 
         gpp, reco = predict[0].squeeze(), predict[1].squeeze()
-
+ 
         results_gpp.append(footprint_weighted_sum(gpp, footprint))
         results_reco.append(footprint_weighted_sum(reco, footprint))
-
+ 
+        if fixed_footprint is not None:
+            # fixed_footprint is (H, W), broadcasts against gpp/reco's
+            # (batch, H, W) via the elementwise multiply inside
+            # footprint_weighted_sum - same fixed weights applied to every
+            # sample in the batch, no tiling needed.
+            results_gpp_fixed.append(footprint_weighted_sum(gpp, fixed_footprint[None, ...]))
+            results_reco_fixed.append(footprint_weighted_sum(reco, fixed_footprint[None, ...]))
+ 
         if i == eval_cfg["example_batch_index"]:
             example_batch = {"Xsat": Xsat, "batch_times": batch_times, "predict": predict}
-
+ 
     if example_batch is None:
         logger.warning("evaluation.example_batch_index=%d is out of range - using the last batch instead.",
                         eval_cfg["example_batch_index"])
         example_batch = {"Xsat": Xsat, "batch_times": batch_times, "predict": predict}
-
+ 
     sorted_idx = np.argsort(times)
-    gpp_sorted = np.concatenate(results_gpp)[sorted_idx]
-    reco_sorted = np.concatenate(results_reco)[sorted_idx]
-    return times[sorted_idx], gpp_sorted, reco_sorted, example_batch
+    times_sorted = times[sorted_idx]
+ 
+    results = {
+        "dynamic": (
+            np.concatenate(results_gpp)[sorted_idx],
+            np.concatenate(results_reco)[sorted_idx],
+        )
+    }
+    if fixed_footprint is not None:
+        results["fixed"] = (
+            np.concatenate(results_gpp_fixed)[sorted_idx],
+            np.concatenate(results_reco_fixed)[sorted_idx],
+        )
+ 
+    return times_sorted, results, example_batch
+
 
 def assign_predictions(ds_cropped, times_sorted, gpp_sorted, reco_sorted, model="pyvprnn_v1"):
     gpp_da = xr.DataArray(gpp_sorted, coords={"t": times_sorted}, dims=["t"]).reindex(
@@ -481,8 +515,10 @@ def main():
     base_path = os.path.join(cfg["paths"]["output_base_dir"], candidates[0])
 
     range_tag = ""
-    if args.t_start or args.t_stop:
-        range_tag = "_" + "_".join(v for v in (args.t_start, args.t_stop) if v)
+
+    # Bring this back in asap!!!!!
+    # if args.t_start or args.t_stop:
+    #     range_tag = "_" + "_".join(v for v in (args.t_start, args.t_stop) if v)
     # Tagged by model too, so a v1 and v2 run against the same site/range
     # land in separate directories instead of overwriting each other's
     # pixel_model_*.keras / training_history_*.csv.
@@ -498,33 +534,56 @@ def main():
         k=cfg["training"]["kfold"], val_frac=cfg["training"]["val_frac"], test_frac=cfg["training"]["test_frac"]
     )
 
+    fixed_footprint = build_fixed_footprint(pyvprnn_inst.ds_cropped, half_size=2)
+    
     # --- train (or load) each fold ----------------------------------------------
     model_paths = train_or_load_folds(pyvprnn_inst, outpath, cfg)
 
     # --- inference ---------------------------------------------------------------
     eval_cfg = cfg["evaluation"]
     if eval_cfg["aggregate_folds"] and cfg["training"]["kfold"] > 1:
-        all_times, all_gpp, all_reco = [], [], []
+        all_times = []
+        all_results = {"dynamic": ([], []), "fixed": ([], [])}
         for k, model_path in model_paths.items():
             pyvprnn_inst.load_model(model_path)
-            t, g, r, example_batch = run_inference(pyvprnn_inst, cfg, model=model)
+            t, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model, fixed_footprint=fixed_footprint)
             all_times.append(t)
-            all_gpp.append(g)
-            all_reco.append(r)
+            for key in all_results:
+                g, r = results[key]
+                all_results[key][0].append(g)
+                all_results[key][1].append(r)
+ 
         times_sorted = np.concatenate(all_times)
-        gpp_sorted = np.concatenate(all_gpp)
-        reco_sorted = np.concatenate(all_reco)
         order = np.argsort(times_sorted)
-        times_sorted, gpp_sorted, reco_sorted = times_sorted[order], gpp_sorted[order], reco_sorted[order]
+        times_sorted = times_sorted[order]
+ 
+        final_results = {}
+        for key, (gpp_list, reco_list) in all_results.items():
+            final_results[key] = (
+                np.concatenate(gpp_list)[order],
+                np.concatenate(reco_list)[order],
+            )
+        results = final_results
         primary_model_path = model_paths[eval_cfg["fold"]]
     else:
         primary_model_path = model_paths[eval_cfg["fold"]]
         pyvprnn_inst.load_model(primary_model_path)
-        times_sorted, gpp_sorted, reco_sorted, example_batch = run_inference(pyvprnn_inst, cfg, model=model)
-
+        times_sorted, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model, fixed_footprint=fixed_footprint)
+ 
+    # Dynamic-footprint predictions keep the existing model naming
+    # (e.g. "pyvprnn_v1_gpp") - fixed-footprint predictions get a distinct
+    # suffix so both live side by side in the same saved dataset without
+    # colliding.
+    gpp_dyn, reco_dyn = results["dynamic"]
+    gpp_fixed, reco_fixed = results["fixed"]
+ 
     pyvprnn_inst.ds_cropped = assign_predictions(
-        pyvprnn_inst.ds_cropped, times_sorted, gpp_sorted, reco_sorted, model=model
+        pyvprnn_inst.ds_cropped, times_sorted, gpp_dyn, reco_dyn, model=model
     )
+    pyvprnn_inst.ds_cropped = assign_predictions(
+        pyvprnn_inst.ds_cropped, times_sorted, gpp_fixed, reco_fixed, model=f"{model}_fixedfp"
+    )
+
     ds_cropped_path = os.path.join(outpath, "ds_cropped.nc")
     saved_ds = save_cropped_dataset(pyvprnn_inst.ds_cropped, ds_cropped_path)
 

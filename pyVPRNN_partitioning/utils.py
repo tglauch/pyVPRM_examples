@@ -6,9 +6,43 @@ import sys
 import time
 import logging
 import numpy as np
-
+from pyproj import Transformer
 logger = logging.getLogger("vprm_pipeline")
 
+
+def build_fixed_footprint(ds_cropped, half_size=2):
+    """
+    A static footprint: uniform weight over a (2*half_size+1) x (2*half_size+1)
+    pixel box centered on the tower's own grid cell - default half_size=2
+    gives a 5x5 box. Normalized to sum to 1, matching the real time-varying
+    FFP footprint's own normalization, so footprint_weighted_sum() results
+    using this fixed footprint are on the same scale as - and directly
+    comparable to - results using the real footprint.
+    """
+    site_lon = ds_cropped.attrs["site_lon"]
+    site_lat = ds_cropped.attrs["site_lat"]
+
+    transformer = Transformer.from_crs("EPSG:4326", ds_cropped.rio.crs, always_xy=True)
+    site_x, site_y = transformer.transform(site_lon, site_lat)
+
+    x_idx = int(np.argmin(np.abs(ds_cropped["x"].values - site_x)))
+    y_idx = int(np.argmin(np.abs(ds_cropped["y"].values - site_y)))
+
+    ny, nx = ds_cropped.sizes["y"], ds_cropped.sizes["x"]
+    footprint = np.zeros((ny, nx), dtype=np.float32)
+
+    y_lo, y_hi = max(0, y_idx - half_size), min(ny, y_idx + half_size + 1)
+    x_lo, x_hi = max(0, x_idx - half_size), min(nx, x_idx + half_size + 1)
+    if (y_hi - y_lo) < (2 * half_size + 1) or (x_hi - x_lo) < (2 * half_size + 1):
+        logger.warning(
+            "Fixed footprint box clipped by domain edge (tower pixel too close "
+            "to the crop boundary) - got %dx%d instead of the requested %dx%d.",
+            y_hi - y_lo, x_hi - x_lo, 2 * half_size + 1, 2 * half_size + 1,
+        )
+
+    footprint[y_lo:y_hi, x_lo:x_hi] = 1.0
+    footprint /= footprint.sum()
+    return footprint
 
 def retry_with_backoff(fn, max_attempts=5, base_delay=5, description="operation"):
     """

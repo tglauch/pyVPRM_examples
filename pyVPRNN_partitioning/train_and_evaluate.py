@@ -313,7 +313,10 @@ def _prepare_diurnal_dataset(ds, cfg, model="pyvprnn_v1"):
     ds = ds.swap_dims({"t": "datetime_t"}).drop_vars("datetime_utc").rename({"datetime_t": "datetime_utc"})
 
     ds[f"{model}_NEE"] = -ds[f"{model}_gpp"] + ds[f"{model}_reco"]
-    ds["NEE_DT_VUT_REF"] = -ds["GPP_DT_VUT_REF"] + ds["RECO_DT_VUT_REF"]
+    if "GPP_DT_VUT_REF" in ds.keys():
+        ds["NEE_DT_VUT_REF"] = -ds["GPP_DT_VUT_REF"] + ds["RECO_DT_VUT_REF"]
+    if "GPP_NT_VUT_REF" in ds.keys():
+        ds["NEE_NT_VUT_REF"] = -ds["GPP_NT_VUT_REF"] + ds["RECO_NT_VUT_REF"]
 
     time_coord = "datetime_utc"
     ds = ds.assign_coords(
@@ -323,7 +326,9 @@ def _prepare_diurnal_dataset(ds, cfg, model="pyvprnn_v1"):
     )
 
     variables = [f"{model}_gpp", f"{model}_reco", f"{model}_NEE",
-                 "GPP_DT_VUT_REF", "RECO_DT_VUT_REF", "NEE_VUT_REF", "NEE_DT_VUT_REF"]
+                 "GPP_DT_VUT_REF", "RECO_DT_VUT_REF",
+                 "GPP_NT_VUT_REF", "RECO_NT_VUT_REF",
+                 "NEE_VUT_REF", "NEE_DT_VUT_REF"]
     ref_var = next(v for v in variables if v in ds)
 
     min_obs = cfg["evaluation"]["diurnal_min_valid_days"] * cfg["evaluation"]["diurnal_obs_per_day"]
@@ -351,15 +356,16 @@ def make_diurnal_cycle_plot(ds_cropped, cfg, site, out_path, model="pyvprnn_v1")
     plot_ds = _prepare_diurnal_dataset(ds_cropped, cfg, model=model)
 
     colors = {
-        f"{model}_gpp": "#1f77b4", f"{model}_reco": "#1f77b4",
-        "GPP_DT_VUT_REF": "#2ca02c", "RECO_DT_VUT_REF": "#2ca02c",
-        "NEE_DT_VUT_REF": "#006d2c", f"{model}_NEE": "#08519c",
+        f"{model}_gpp": "#7570b3", f"{model}_reco": "#7570b3",
+        "GPP_DT_VUT_REF": "#1b9e77", "RECO_DT_VUT_REF": "#1b9e77",
+        "NEE_DT_VUT_REF": "#1b9e77", f"{model}_NEE": "#7570b3",
+        "GPP_NT_VUT_REF": "#d95f02", "RECO_NT_VUT_REF": "#d95f02",
         "NEE_VUT_REF": "k",
     }
 
     years = sorted(plot_ds["year"].data)
     n_months = 12
-    fs = figsize(2.0, 0.1)
+    fs = figsize(1.3, 0.1)
     fig, axes = plt.subplots(
         nrows=len(years), ncols=n_months, figsize=(fs[0], len(years) * fs[1]),
         sharey=True, sharex=True, gridspec_kw={"wspace": 0.1, "hspace": 0.1},
@@ -388,13 +394,14 @@ def make_diurnal_cycle_plot(ds_cropped, cfg, site, out_path, model="pyvprnn_v1")
                 if not np.isfinite(vals).any():
                     continue
                 ax.plot(plot_ds["hour"], vals, ls="dashed" if "NEE" in var else "-",
-                         lw=1.0, color=colors.get(var))
+                         lw=0.7, color=colors.get(var))
 
     # Legend entries limited to variables actually plotted above (the
     # original included an "NT" entry even though NT variables were
     # commented out of `variables` and never drawn).
-    axes[0].plot([], [], label=model, color="#1f77b4")
-    axes[0].plot([], [], label="DT", color="#2ca02c")
+    axes[0].plot([], [], label=model.replace('pyvprnn_', 'pyVPRNN '), color="#7570b3")
+    axes[0].plot([], [], label="DT", color="#1b9e77")
+    axes[0].plot([], [], label="NT", color="#d95f02")
     axes[0].plot([], [], label="Obs.", color="k")
     handles, labels = axes[0].get_legend_handles_labels()
     top_ax = axes[6] if len(axes) > 6 else axes[0]

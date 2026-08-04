@@ -442,19 +442,14 @@ def make_pdp_ice_plot(ds_cropped_path, cfg, site, model_path, out_path, model="p
 
     gen = make_generator(pyvprnn_inst_pdp, is_lagged, batch_size=50000, times=pyvprnn_inst_pdp.common_times, shuffle=True)
     x, _ = gen[0]
-    if is_lagged:
-        Xsat, Xstatic, Xmet, Xsw_in_pot, _Xmet_lagged, footprint, flux_mask = x
-    else:
-        Xsat, Xstatic, Xmet, Xsw_in_pot, footprint, flux_mask = x
 
     if is_lagged:
-        # Reco's temperature response is no longer a clean function of
-        # instantaneous T alone once it depends on lagged history too - a
-        # PDP sweeping instantaneous T while holding the lagged-history
-        # encoding fixed at its marginal distribution wouldn't represent
-        # "the" temperature response, just one arbitrary slice through a
-        # higher-dimensional dependence. GPP's inputs are unaffected by the
-        # lag branch, so only that panel is meaningful for pyvprnn_v2.
+        Xsat, Xstatic, Xmet, Xsw_in_pot, Xmet_lagged, footprint, flux_mask = x
+    else:
+        Xsat, Xstatic, Xmet, Xsw_in_pot, footprint, flux_mask = x
+        Xmet_lagged = None  
+        
+    if is_lagged:
         fig = plt.figure(figsize=figsize(0.55, ratio=0.4))
         ax1 = fig.add_axes((0.0, 0.0, 1.0, 1.0))
     else:
@@ -465,8 +460,9 @@ def make_pdp_ice_plot(ds_cropped_path, cfg, site, model_path, out_path, model="p
     _, t_values, ice_curves, gpp_pdp, _ = plotting_functions.plot_ice_pdp_gpp(
         pyvprnn_inst_pdp, Xmet, Xsat, Xstatic, Xsw_in_pot, flux_mask, opath="",
         ylabel=r"Normalized GPP [a.u.]", ax=ax1, fig=fig,
-        show_band=True, show_ices=False, plot_pdp=True, add_colorbar=False,
-    )
+        met_stack_windowed=Xmet_lagged,
+        show_band=True, show_ices=False, plot_pdp=True, add_colorbar=False)
+    
     summary["gpp_t_values"], summary["gpp_ice_curves"], summary["gpp_pdp"] = t_values, ice_curves, gpp_pdp
 
     if not is_lagged:

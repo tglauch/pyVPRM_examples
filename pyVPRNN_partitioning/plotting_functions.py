@@ -133,35 +133,51 @@ def comparison_to_dt_nt(ds, opath=None,
         fig = plt.figure(figsize=figsize(1.4, ratio=0.2))
         # Helper function
         def add_hexbin_panel(ax, x, y, xlabel, ylabel):
+            x = np.asarray(x)
+            y = np.asarray(y)
+    
+            finite = np.isfinite(x) & np.isfinite(y)
+            if not finite.all():
+                n_dropped = int((~finite).sum())
+                print(f"add_hexbin_panel: dropping {n_dropped} non-finite point(s) out of {len(x)} "
+                      f"(likely pyvprnn_v2's lag-window gap or another data gap).")
+                x, y = x[finite], y[finite]
+        
+            if len(x) < 2:
+                print("add_hexbin_panel: fewer than 2 finite points remain - skipping this panel.")
+                ax.set_xlabel(xlabel)
+                ax.set_ylabel(ylabel)
+                return None
+        
             try:
                 xy = np.vstack([x, y])
                 kde = gaussian_kde(xy)
                 density = kde(xy)
-            
+        
                 # Normalize density for plotting
                 density_norm = (density - density.min()) / (density.max() - density.min())
-            
+        
                 # Use density for alpha
                 alpha_scaled = np.log1p(density * 100)
                 alpha_scaled = alpha_scaled / alpha_scaled.max()
-            
+        
             except np.linalg.LinAlgError:
                 print("Warning: KDE failed — falling back to constant values")
                 alpha_default = 0.1
                 alpha_scaled = np.full_like(x, alpha_default, dtype=float)
                 density_norm = np.zeros_like(x)
-            
+        
             hb = ax.scatter(
                 x,
                 y,
                 s=1,
                 marker='o',
                 alpha=alpha_scaled,
-                c=density_norm,         
-                cmap='inferno',         
+                c=density_norm,
+                cmap='inferno',
                 edgecolor='none'
             )
-            
+        
             lim = np.nanpercentile(np.concatenate([x, y]), 99)
             lim_min = np.nanpercentile(np.concatenate([x, y]), 1)
             ax.plot([lim_min, lim], [lim_min, lim], color='grey', alpha=0.5, linestyle='-.')
@@ -183,7 +199,7 @@ def comparison_to_dt_nt(ds, opath=None,
             ax.set_ylabel(ylabel)
         
             return hb
-        
+                
         # -----------------------
         # Panel 1 — NEE
         # -----------------------
@@ -314,18 +330,18 @@ def plot_ice_pdp_gpp(pyvprnn_inst,
     # Condition mask
     if rh_min_max is None:
         high_light_mask = (
-            (Xmet_test[:,ssrd_idx] > np.percentile(Xmet_test[:,ssrd_idx], 75)) & 
-            (Xmet_test[:,ssrd_idx] < np.percentile(Xmet_test[:,ssrd_idx], 85)) & 
-            (Xsat_test[:,sx,sy,2] > np.percentile(Xsat_test[:,sx,sy,2], 70))&
-            (Xsat_test[:,sx,sy,2] < np.percentile(Xsat_test[:,sx,sy,2], 80))&
+            (Xmet_test[:,ssrd_idx] > np.nanpercentile(Xmet_test[:,ssrd_idx], 75)) & 
+            (Xmet_test[:,ssrd_idx] < np.nanpercentile(Xmet_test[:,ssrd_idx], 85)) & 
+            (Xsat_test[:,sx,sy,2] > np.nanpercentile(Xsat_test[:,sx,sy,2], 70))&
+            (Xsat_test[:,sx,sy,2] < np.nanpercentile(Xsat_test[:,sx,sy,2], 80))&
             (Xmet_test[:, rh_idx] > np.nanpercentile(Xmet_test[:, rh_idx], 30)) &
             (Xmet_test[:, rh_idx] < np.nanpercentile(Xmet_test[:, rh_idx], 100)))
     else:
         high_light_mask = (
-            (Xmet_test[:,ssrd_idx] > np.percentile(Xmet_test[:,ssrd_idx], 75)) & 
-            (Xmet_test[:,ssrd_idx] < np.percentile(Xmet_test[:,ssrd_idx], 85)) & 
-            (Xsat_test[:,sx,sy,2] > np.percentile(Xsat_test[:,sx,sy,2], 70))&
-            (Xsat_test[:,sx,sy,2] < np.percentile(Xsat_test[:,sx,sy,2], 80))&
+            (Xmet_test[:,ssrd_idx] > np.nanpercentile(Xmet_test[:,ssrd_idx], 75)) & 
+            (Xmet_test[:,ssrd_idx] < np.nanpercentile(Xmet_test[:,ssrd_idx], 85)) & 
+            (Xsat_test[:,sx,sy,2] > np.nanpercentile(Xsat_test[:,sx,sy,2], 70))&
+            (Xsat_test[:,sx,sy,2] < np.nanpercentile(Xsat_test[:,sx,sy,2], 80))&
             (Xmet_test[:, rh_idx] > rh_min_max[0])& 
             (Xmet_test[:, rh_idx] < rh_min_max[1])) 
    #)

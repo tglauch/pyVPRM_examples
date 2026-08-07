@@ -37,10 +37,37 @@ import geopandas as gpd
 import stackstac
 from pystac_client import Client
 from shapely.geometry import Point
-
+import planetary_computer
 from utils import make_bbox
 
+
 logger = logging.getLogger("vprm_pipeline")
+
+def ensure_pyvprm_importable(cfg):
+    """
+    Make sure `import pyVPRM` (and pyVPRM.sat_managers.*) will succeed.
+ 
+    If pyVPRM is pip-installed, this is a no-op. If it isn't, fall back to
+    cfg["paths"]["pyvprm_repo_path"] - the path to a local pyVPRM checkout -
+    added to sys.path so it can be imported like a normal package.
+    """
+    try:
+        import pyVPRM  # noqa: F401
+        return
+    except ImportError:
+        pass
+ 
+    repo_path = cfg.get("paths", {}).get("pyvprm_repo_path")
+    if not repo_path:
+        raise ImportError(
+            "pyVPRM isn't installed and no paths.pyvprm_repo_path is set in "
+            "config.yaml to fall back to a local checkout."
+        )
+    if repo_path not in sys.path:
+        sys.path.insert(0, repo_path)
+ 
+    import pyVPRM  # noqa: F401  - retry now that repo_path is on sys.path
+
 
 
 def source_cfg(cfg):
@@ -139,6 +166,160 @@ def rgb_quicklook_index(cube, cfg):
 
 
 # ---------------------------------------------------------------------------
+# HLS (Harmonized Landsat Sentinel-2)
+# ---------------------------------------------------------------------------
+# Unlike earth-search's Sentinel-2 collection (which already exposes common
+# band names like "red"/"nir08"), Planetary Computer's raw HLS assets are
+# keyed by band code (B01, B04, ...), and the L30 (Landsat) and S30
+# (Sentinel-2) collections use *different* codes for the same physical band
+# (e.g. NIR is B05 on L30 but B08 on S30). We rename each item's assets to a
+# shared set of common names before stacking, so both collections stack
+# together cleanly and advanced.satellite.hls.band_map can reference plain
+# names ("nir", "swir1", ...) the same way the Sentinel-2 block does.
+_HLS_BAND_CROSSWALK = {
+    "hls2-l30": {
+        "B01": "coastal",
+        "B02": "blue",
+        "B03": "green",
+        "B04": "red",
+        "B05": "nir",
+        "B06": "swir1",
+        "B07": "swir2",
+        "B09": "cirrus",
+        "B10": "thermal1",
+        "B11": "thermal2",
+        "Fmask": "Fmask",
+    },
+    "hls2-s30": {
+        "B01": "coastal",
+        "B02": "blue",
+        "B03": "green",
+        "B04": "red",
+        "B05": "rededge1",
+        "B06": "rededge2",
+        "B07": "rededge3",
+        "B08": "nir",         # NIR-broad: shared with L30's B05, not bandpass-adjusted
+        "B8A": "nir_narrow",  # Sentinel-only, no Landsat equivalent
+        "B09": "watervapor",
+        "B10": "cirrus",
+        "B11": "swir1",
+        "B12": "swir2",
+        "Fmask": "Fmask",
+    },
+}
+ 
+ 
+def _harmonize_hls_band_names(items):
+    """Rename each item's assets in place from raw band codes to shared common names."""
+    for item in items:
+        crosswalk = _HLS_BAND_CROSSWALK.get(item.collection_id)
+        if crosswalk is None:
+            continue
+        for raw_key, common_name in crosswalk.items():
+            if raw_key in item.assets and raw_key != common_name:
+                item.assets[common_name] = item.assets.pop(raw_key)
+    return items
+ 
+def fetch_hls_stack(flux_tower_inst, footprint_size, cfg):
+    hls_cfg = source_cfg(cfg)
+    lat, lon = flux_tower_inst.lat, flux_tower_inst.lon
+    point = Point(lon, lat)
+ 
+    buffer_days = hls_cfg["search_buffer_days"]
+    t0 = (flux_tower_inst.flux_data["datetime_utc"].iloc[0] - timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+    t1 = (flux_tower_inst.flux_data["datetime_utc"].iloc[-1] + timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+ 
+    bbox = make_bbox(lat, lon, footprint_size)
+ 
+    catalog = Client.open(hls_cfg["stac_endpoint"], modifier=planetary_computer.sign_inplace)
+    search = catalog.search(
+        collections=hls_cfg["collections"],
+        bbox=bbox,
+        datetime=f"{t0}/{t1}",
+        query={"eo:cloud_cover": {"lt": hls_cfg["cloud_cover_max_pct"]}},
+    )
+    items = list(search.items())
+    logger.info("Found %d HLS items (L30+S30)", len(items))
+    if not items:
+        raise RuntimeError("No HLS items found for the requested site/time range.")
+ 
+    _harmonize_hls_band_names(items)
+ 
+    bands = hls_cfg["bands"]
+    # epsg must be pinned explicitly: bbox searches (unlike the Sentinel-2
+    # single-MGRS-tile search above) can return items from adjacent UTM
+    # zones near tile boundaries, and stackstac needs one common CRS to
+    # stack into. L30/S30 share NASA's MGRS grid, so the first item's zone
+    # is the right choice for a small footprint around one tower.
+    epsg = items[0].properties.get("proj:epsg")
+    stack = stackstac.stack(
+        items,
+        assets=bands,
+        epsg=epsg,
+        resolution=hls_cfg["resolution_m"],
+        bounds_latlon=bbox,
+        dtype="float32",
+        fill_value=np.float32("nan"),
+        # rescale=True trips a numpy safe-casting error against HLS's
+        # integer scale/offset metadata (a stackstac quirk) - we scale to
+        # reflectance ourselves below instead.
+        rescale=False,
+    )
+    cube = stack.to_dataset(dim="band")
+    cube = cube.rio.write_crs(cube.rio.crs)
+    cube = cube.compute() 
+ 
+    # HLS reflectance bands are scaled integers (scale factor 0.0001, per
+    # the LP DAAC product spec); Fmask is a bit-packed QA band and must not
+    # be scaled.
+    quality_band = hls_cfg["quality_band"]
+    bands_to_scale = [b for b in bands if b != quality_band]
+    cube[bands_to_scale] *= hls_cfg["reflectance_scale_factor"]
+    cube = cube.chunk({"time": -1})
+ 
+    logger.info("Cube size: %.2f GB", cube.nbytes / 1e9)
+    return cube, bbox, point
+ 
+ 
+def mask_hls(handler, vprm_inst, cfg):
+    """
+    Permanent water-body exclusion, run post-Kalman - mirrors mask_sentinel2's
+    dominant_scl logic exactly (both reduce over "time" before ever touching
+    vprm_inst.sat_imgs.sat_img, so the resulting mask is (y, x)-only and
+    broadcasts safely regardless of what vprm_inst's current temporal
+    dimension is called - "time" pre-Kalman, "time_gap_filled" post-Kalman).
+ 
+    Per-timestep QA masking (cloud/adjacent/shadow/snow) does NOT belong
+    here: it already happened earlier and correctly, on handler.sat_img's
+    original per-scene time axis, via add_sat_img(mask_bad_pixels=True,
+    mask_clouds=True, mask_snow=True, mask_water=True, ...), which calls
+    handler.mask_bad_pixels()/.mask_clouds()/.mask_snow()/.mask_water()
+    directly. Redoing it here against handler.sat_img["Fmask"] would compare
+    its original "time" dimension against vprm_inst.sat_imgs.sat_img's
+    "time_gap_filled" dimension post-Kalman - two different, non-aligned
+    xarray dimensions - and instead of erroring, xarray silently broadcasts
+    across both, producing a spurious 4D result carrying both axes at once.
+ 
+    Fmask's water bit is a per-scene spectral detection, not a stable
+    land-cover class like SCL's, so unlike mask_sentinel2 (which reads a
+    single categorical class straight off "scl"), this takes a majority
+    vote across handler.sat_img's original time axis first to decide which
+    pixels are permanent water.
+    """
+    is_water = handler.water_mask()
+    dominant_water = is_water.sum(dim="time") > (is_water.sizes["time"] / 2)
+ 
+    vprm_inst.sat_imgs.sat_img["dominant_water"] = dominant_water
+    for sat_ind in source_cfg(cfg)["indices"]:
+        vprm_inst.sat_imgs.sat_img[sat_ind] = vprm_inst.sat_imgs.sat_img[sat_ind].where(
+            ~vprm_inst.sat_imgs.sat_img["dominant_water"]
+        )
+ 
+    vprm_inst.calc_min_max_evi_lswi()
+
+ 
+
+# ---------------------------------------------------------------------------
 # MODIS (not yet implemented)
 # ---------------------------------------------------------------------------
 
@@ -167,10 +348,33 @@ def mask_modis(handler, vprm_inst, cfg):
 
 SOURCES = {
     "sentinel2": {"fetch": fetch_sentinel2_stack, "mask": mask_sentinel2},
+    "hls": {"fetch": fetch_hls_stack, "mask": mask_hls},
     "modis": {"fetch": fetch_modis_stack, "mask": mask_modis},
 }
 
+ 
+def get_satellite_handler(cube, cfg):
+    """Construct the right sat_manager instance (sentinel2/hls/...) for cfg's selected source."""
+    ensure_pyvprm_importable(cfg)  # patches sys.path from paths.pyvprm_repo_path if needed
+ 
+    from pyVPRM.sat_managers.sentinel2 import sentinel2
+    from pyVPRM.sat_managers.hls import hls
+ 
+    handler_classes = {
+        "sentinel2": sentinel2,
+        "hls": hls,
+        # "modis": modis,  # add once pyVPRM.sat_managers.modis exists
+    }
+ 
+    source = cfg["satellite"]["source"]
+    handler_cls = handler_classes.get(source)
+    if handler_cls is None:
+        raise NotImplementedError(
+            f"No sat_manager handler registered for source '{source}' in get_satellite_handler()."
+        )
+    return handler_cls(sat_img=cube)
 
+    
 def fetch_satellite_stack(flux_tower_inst, footprint_size, cfg):
     return SOURCES[cfg["satellite"]["source"]]["fetch"](flux_tower_inst, footprint_size, cfg)
 

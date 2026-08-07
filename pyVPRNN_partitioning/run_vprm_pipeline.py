@@ -221,11 +221,10 @@ def save_rgb_quicklook(cube, cfg, out_path):
 
 def run_vprm_satellite_processing(cube, flux_tower_inst, footprint_size, cfg):
     import pyVPRM
-    from pyVPRM.sat_managers.sentinel2 import sentinel2
     from pyVPRM.VPRM import vprm_preprocessor
 
     s_cfg = sat.source_cfg(cfg)
-    handler = sentinel2(sat_img=cube)
+    handler = sat.get_satellite_handler(cube, cfg)
     handler.crop(
         lonlat=(flux_tower_inst.lon, flux_tower_inst.lat),
         radius=footprint_size / 1000 * s_cfg["crop_buffer_factor"],

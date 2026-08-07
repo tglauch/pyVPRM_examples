@@ -126,6 +126,35 @@ advanced:
       dominant_class_pool: ["vegetation", "not_vegetated", "water"]
       water_class: "water"
       rgb_quicklook_valid_class: "vegetation"
+      
+    hls:
+      collections: ["hls2-l30", "hls2-s30"]   # Landsat 8/9 + Sentinel-2, harmonized
+      stac_endpoint: "https://planetarycomputer.microsoft.com/api/stac/v1"
+      resolution_m: 30
+      cloud_cover_max_pct: 90
+      search_buffer_days: 120        # extra days searched before/after tower record
+      crop_buffer_factor: 1.2        # extra radius (relative to footprint) kept after crop
+      reflectance_scale_factor: 0.0001   # official HLS v2.0 scale factor (offset 0)
+ 
+      # Common band names after _harmonize_hls_band_names() renames the raw
+      # L30/S30 asset codes (see _HLS_BAND_CROSSWALK in satellite_sources.py).
+      bands: ["red", "green", "blue", "nir", "swir1", "rededge1", "Fmask"]
+      quality_band: "Fmask"
+      band_map:
+        nir: "nir"
+        red: "red"
+        blue: "blue"
+        swir: "swir1"
+        red_edge: "rededge1"   # Sentinel-only; all-NaN on L30-derived timesteps
+      indices: ["ndre", "nirv", "lswi", "evi2", "evi"]   # ndre needs red_edge
+ 
+      # Per-timestep QA mask: any pixel flagged with one of these bits in a
+      # given scene is set to NaN for that scene only (see mask_hls() in
+      # satellite_sources.py, which reads these via hls.qa_mask() in
+      # pyVPRM/sat_managers/hls.py - bit positions themselves are hardcoded
+      # there per the HLS v2.0 spec, same as sentinel2's SCL codes are
+      # hardcoded in its own manager class).
+      mask_bits: ["cloud", "adjacent_cloud_shadow", "cloud_shadow", "snow_ice"]
 
     modis:
       # NOT YET IMPLEMENTED - see fetch_modis_stack()/mask_modis() in
@@ -187,3 +216,5 @@ advanced:
   plotting:
     quicklook_dpi: 300
     example_plot_dpi: 500
+
+

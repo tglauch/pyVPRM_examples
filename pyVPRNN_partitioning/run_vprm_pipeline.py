@@ -159,6 +159,8 @@ def load_flux_tower_data(flux_tower_inst, cfg, token):
 
     if cfg['site']['measurement_height'] == 'None':
         measurement_height = None
+    else:
+        measurement_height = cfg['site']['measurement_height']
         
     flux_tower_inst.add_tower_data(met_inst=blh_handler,
                                    canopy_height_path=cfg['paths']['canopy_height'],

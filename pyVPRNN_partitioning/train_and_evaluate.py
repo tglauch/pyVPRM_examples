@@ -51,7 +51,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default="config.yaml", help="Path to YAML config file")
     p.add_argument("--site", default=None, help="Override site.id from config")
-    p.add_argument("--model", default=None, choices=["pyvprnn_v1", "pyvprnn_v2"],
+    p.add_argument("--model", default=None, choices=["pyvprnn_v1", "pyvprnn_v2", "pyvprnn_v3"],
                     help="Override model.version from config")
     p.add_argument("--t-start", default=None, help="Restrict training data to this start date (YYYY-MM-DD) onward")
     p.add_argument("--t-stop", default=None, help="Restrict training data up to this stop date (YYYY-MM-DD)")

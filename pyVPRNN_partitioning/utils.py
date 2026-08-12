@@ -223,25 +223,32 @@ def load_vprm_land_cover_classes(vprm_config_path):
     return sorted(entry["vprm_class"] for entry in veg_cfg.values())
 
 
+# Model names whose constructor accepts the lag-related kwargs
+# (lagged_met_vars / lag_hours / precip_var). pyvprnn_v1's constructor
+# doesn't accept these at all - they must not be passed when instantiating
+# it. Kept as an explicit set rather than an `== "pyvprnn_v2"` check, since
+# that check itself was the bug that broke when pyvprnn_v3 was added.
+LAGGED_MODEL_NAMES = {"pyvprnn_v2", "pyvprnn_v3"}
+
+
 def build_pyvprnn_kwargs(cfg, model_name=None):
     """
-    Build the constructor kwargs for pyvprnn_v1/pyvprnn_v2 that need to stay
+    Build the constructor kwargs for pyvprnn_v1/v2/v3 that need to stay
     config-driven, and only those: land_cover_classes (derived from
     vprm_config_path, so it can't silently disagree with whatever built
-    land_cover_map in run_vprm_pipeline.py) and, for pyvprnn_v2, the lag
-    settings.
+    land_cover_map in run_vprm_pipeline.py) and, for the lagged models, the
+    lag settings.
 
     sat_vars/met_vars/gpp_met_vars/reco_met_vars/met_scaling are
-    deliberately NOT included here - they're left as pyvprnn_v1/v2's own
+    deliberately NOT included here - they're left as pyvprnn_v1/v2/v3's own
     hardcoded DEFAULT_* class attributes. Making everything config-driven
     added more moving parts than it was worth; land_cover_classes is the
     one exception because getting it wrong silently breaks the static
     input's shape/meaning, not just a modeling choice.
 
-    model_name selects whether the v2-only lag kwargs (lagged_met_vars,
-    variable_lags, lag_window) are included - pyvprnn_v1's constructor
-    doesn't accept them at all, so they must NOT be passed when
-    instantiating v1. Defaults to cfg["model"]["version"] if not given.
+    Uses the current lagged_met_vars/lag_hours/precip_var constructor API
+    (NOT the old variable_lags/lag_window one, which no longer exists on
+    either lagged model's __init__).
     """
     model_cfg = cfg["model"]
     vprm_config_path = resolve_vprm_config_path(cfg)
@@ -250,12 +257,12 @@ def build_pyvprnn_kwargs(cfg, model_name=None):
     }
 
     model_name = model_name or cfg["model"]["version"]
-    if model_name == "pyvprnn_v2":
+    if model_name in LAGGED_MODEL_NAMES:
         lag_cfg = model_cfg.get("lag", {})
         kwargs.update({
             "lagged_met_vars": lag_cfg.get("lagged_met_vars"),
-            "variable_lags": lag_cfg.get("variable_lags"),
-            "lag_window": lag_cfg.get("lag_window"),
+            "lag_hours": lag_cfg.get("lag_hours"),
+            "precip_var": lag_cfg.get("precip_var"),
         })
 
     return kwargs
@@ -264,7 +271,7 @@ def build_pyvprnn_kwargs(cfg, model_name=None):
 def resolve_pyvprnn_model(model_name):
     """
     Return (model_class, generator_class, is_lagged) for a given pyvprnn
-    version name. Centralizes the v1/v2 dispatch so every call site in
+    version name. Centralizes the v1/v2/v3 dispatch so every call site in
     train_and_evaluate.py (dataset loading, inference, PDP) agrees on what
     each model name means, rather than each re-implementing its own
     if/elif independently - which had already drifted out of sync (one
@@ -277,7 +284,10 @@ def resolve_pyvprnn_model(model_name):
     if model_name == "pyvprnn_v2":
         from pyVPRM.vprm_models.pyvprnn_v2 import pyvprnn_v2, LaggedBatchGenerator
         return pyvprnn_v2, LaggedBatchGenerator, True
-    raise ValueError(f"Unknown model '{model_name}' - expected 'pyvprnn_v1' or 'pyvprnn_v2'.")
+    if model_name == "pyvprnn_v3":
+        from pyVPRM.vprm_models.pyvprnn_v3 import pyvprnn_v3, LaggedBatchGenerator
+        return pyvprnn_v3, LaggedBatchGenerator, True
+    raise ValueError(f"Unknown model '{model_name}' - expected 'pyvprnn_v1', 'pyvprnn_v2', or 'pyvprnn_v3'.")
 
 
 def make_generator(pyvprnn_inst, is_lagged, **kwargs):
@@ -286,15 +296,26 @@ def make_generator(pyvprnn_inst, is_lagged, **kwargs):
     instantiated pyvprnn_inst, pulling land_cover_classes (and, if lagged,
     the lag settings) off the instance itself rather than needing them
     passed in separately.
+
+    model_name is taken from pyvprnn_inst's own class name (type(...).__name__)
+    rather than guessed from is_lagged. The old "pyvprnn_v2 if is_lagged
+    else pyvprnn_v1" branching silently imported pyvprnn_v2's
+    LaggedBatchGenerator even when pyvprnn_inst was actually a pyvprnn_v3
+    instance - a real correctness bug (wrong generator class entirely, not
+    just a stale kwarg), not just an API drift, that only surfaced once a
+    second lagged variant existed. Deriving model_name from the instance
+    itself generalizes to any future lagged variant without another
+    hardcoded branch.
     """
-    _, generator_cls, _ = resolve_pyvprnn_model("pyvprnn_v2" if is_lagged else "pyvprnn_v1")
+    model_name = type(pyvprnn_inst).__name__
+    _, generator_cls, _ = resolve_pyvprnn_model(model_name)
     if is_lagged:
         return generator_cls(
             pyvprnn_inst.ds_cropped, pyvprnn_inst.sat_vars, pyvprnn_inst.met_vars,
             land_cover_classes=pyvprnn_inst.land_cover_classes,
             lagged_met_vars=pyvprnn_inst.lagged_met_vars,
-            variable_lags=pyvprnn_inst.variable_lags,
-            lag_window=pyvprnn_inst.lag_window,
+            lag_hours=pyvprnn_inst.lag_hours,
+            precip_var=pyvprnn_inst.precip_var,
             **kwargs,
         )
     return generator_cls(

@@ -2,7 +2,7 @@
 <img width="100%" alt="github_logo 001" src="https://github.com/user-attachments/assets/1628353c-802d-4644-8dbc-0a327a72ab24" />
 </figure> 
 
-Example scripts demonstrating how to use [`pyVPRM`](https://github.com/tglauch/pyVPRM), covering everything from generating model inputs to full flux partitioning.
+Example scripts demonstrating how to use [`pyVPRM`](https://github.com/tglauch/pyVPRM), covering everything from generating VPRM model inputs and VPRM predictions to flux partitioning and interpretation.
 
 ## Installation
 

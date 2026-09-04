@@ -365,8 +365,14 @@ def reconcile_land_cover_classes(lcm, lcm2, flux_tower_inst, cfg):
             evergreen,
             lcm.sat_img["band_1"],
         )
-    else:
-        logger.info("Land cover type '%s' - no evergreen/deciduous reconciliation applied. Change station IGBP to either EF or DF", land_cover_type)
+    elif land_cover_type == "MF":
+        logger.info("Land cover type '%s' is ambigious - setting default to evergeen. If you don't want this change station IGBP to either EF or DF", land_cover_type)
+        lcm.sat_img["band_1"] = xr.where(lcm.sat_img["band_1"] == tree_cover, evergreen, lcm.sat_img["band_1"])
+        lcm.sat_img["band_1"] = xr.where(
+            (lcm.sat_img["band_1"] == evergreen) & (lcm2_high_res["band_1"] == deciduous),
+            deciduous,
+            lcm.sat_img["band_1"],
+        )
     return lcm2_high_res
 
 

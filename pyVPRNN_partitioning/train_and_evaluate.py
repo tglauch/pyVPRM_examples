@@ -60,6 +60,8 @@ def parse_args():
     p.add_argument("--make-plots", action="store_true", help="Save diagnostic plots")
     p.add_argument("--debug-numerics", action="store_true",
                     help="Override training.enable_check_numerics=true (slow - NaN/Inf checking on every op)")
+    p.add_argument("--model_path", default=None, help="Apply this model")
+    p.add_argument("--add_to_outfile", default='', help="some tag to add to the outfile")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
@@ -540,7 +542,12 @@ def main():
     fixed_footprint = build_fixed_footprint(pyvprnn_inst.ds_cropped, half_size=2)
     
     # --- train (or load) each fold ----------------------------------------------
-    model_paths = train_or_load_folds(pyvprnn_inst, outpath, cfg)
+    if args.model_path is None:
+        model_paths = train_or_load_folds(pyvprnn_inst, outpath, cfg)
+    else:
+        model_paths = {0: args.model_path}
+        logger.info("Fold %d: loading existing model at %s", 0, model_paths[0])
+        pyvprnn_inst.load_model(model_paths[0])
 
     # --- inference ---------------------------------------------------------------
     eval_cfg = cfg["evaluation"]
@@ -587,7 +594,7 @@ def main():
         pyvprnn_inst.ds_cropped, times_sorted, gpp_fixed, reco_fixed, model=f"{model}_fixedfp"
     )
 
-    ds_cropped_path = os.path.join(outpath, "ds_cropped.nc")
+    ds_cropped_path = os.path.join(outpath, "ds_cropped_{}.nc".format(args.add_to_outfile))
     saved_ds = save_cropped_dataset(pyvprnn_inst.ds_cropped, ds_cropped_path)
 
     if not cfg["plotting"]["enabled"]:

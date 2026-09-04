@@ -95,7 +95,7 @@ advanced:
   satellite:
 
     sentinel2:
-      collection: "sentinel-2-l2a"
+      collection: "sentinel-2-c1-l2a"
       stac_endpoint: "https://earth-search.aws.element84.com/v1"
       resolution_m: 20
       cloud_cover_max_pct: 90

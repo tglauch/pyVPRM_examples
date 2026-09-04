@@ -39,7 +39,8 @@ from pystac_client import Client
 from shapely.geometry import Point
 import planetary_computer
 from utils import make_bbox
-
+import sys
+from stackstac.rio_reader import DEFAULT_GDAL_ENV
 
 logger = logging.getLogger("vprm_pipeline")
 
@@ -89,6 +90,77 @@ def _find_mgrs_tile(point, shapefile_path):
     return matches[0]
 
 
+# ---------------------------------------------------------------------------
+# Sentinel-2 L2A radiometric scaling
+# ---------------------------------------------------------------------------
+# L2A products are distributed as scaled integers. Until processing baseline
+# 04.00 (2022-01-25) the conversion was simply DN / 10000. From 04.00 onward
+# ESA added a BOA_ADD_OFFSET of -1000 DN (= -0.1 reflectance), so the correct
+# conversion became (DN - 1000) / 10000. Applying the old formula to new-
+# baseline data biases every reflectance high by 0.1, which does not cancel in
+# ratio indices like EVI/LSWI and is therefore silently wrong rather than
+# merely offset. Baseline can vary item-to-item within one search (ESA
+# reprocesses), so scale/offset are resolved per item, preferring the
+# per-asset raster:bands metadata and falling back to the baseline number.
+
+_S2_DEFAULT_SCALE = 1e-4
+_S2_BOA_OFFSET_BASELINE = 4.0
+
+
+def _s2_band_scale_offset(item, band):
+    """(scale, offset) in reflectance units for one asset of one item."""
+    asset = item.assets.get(band)
+    if asset is not None:
+        raster_bands = asset.extra_fields.get("raster:bands") or []
+        meta = raster_bands[0] if raster_bands else {}
+        scale, offset = meta.get("scale"), meta.get("offset")
+        if scale is not None and offset is not None:
+            return float(scale), float(offset)
+
+    try:
+        baseline = float(item.properties.get("s2:processing_baseline", "0"))
+    except (TypeError, ValueError):
+        baseline = 0.0
+    offset = -0.1 if baseline >= _S2_BOA_OFFSET_BASELINE else 0.0
+    return _S2_DEFAULT_SCALE, offset
+
+
+def _apply_s2_boa_scaling(cube, items, bands, quality_band="scl"):
+    """Convert DN to surface reflectance per item, honouring the BOA offset.
+
+    stackstac sorts the stack by date, so the cube's time axis is not in
+    `items` order - the mapping is done via the per-timestep "id" coordinate
+    rather than positionally.
+    """
+    by_id = {it.id: it for it in items}
+    ids = [str(i) for i in cube["id"].values]
+
+    missing = [i for i in ids if i not in by_id]
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} of {len(ids)} cube timesteps have no matching STAC "
+            f"item (first: {missing[0]}) - cannot determine BOA scaling."
+        )
+
+    baselines = sorted({by_id[i].properties.get("s2:processing_baseline") or "unknown"
+                        for i in ids})
+    logger.info("Sentinel-2 processing baselines in stack: %s", ", ".join(baselines))
+
+    offsets_seen = set()
+    for band in bands:
+        if band == quality_band:
+            continue
+        pairs = [_s2_band_scale_offset(by_id[i], band) for i in ids]
+        offsets_seen.update(p[1] for p in pairs)
+        # Deliberately no time coordinate: broadcasting is positional along the
+        # "time" dim, so duplicate timestamps can't trigger an xarray align.
+        scale = xr.DataArray(np.array([p[0] for p in pairs]), dims="time")
+        offset = xr.DataArray(np.array([p[1] for p in pairs]), dims="time")
+        cube[band] = cube[band] * scale + offset
+
+    logger.info("Applied BOA offsets: %s", sorted(offsets_seen))
+    return cube
+
 def fetch_sentinel2_stack(flux_tower_inst, footprint_size, cfg):
     s2_cfg = source_cfg(cfg)
     lat, lon = flux_tower_inst.lat, flux_tower_inst.lon
@@ -117,22 +189,40 @@ def fetch_sentinel2_stack(flux_tower_inst, footprint_size, cfg):
     if not items:
         raise RuntimeError("No Sentinel-2 items found for the requested site/time range.")
 
+    # Assets live in a public AWS Open Data bucket; without the anonymous flag
+    # GDAL looks for credentials and fails. stackstac opens datasets inside its
+    # own rasterio.Env, so process-level env vars are not reliably inherited.
+    gdal_env = DEFAULT_GDAL_ENV.updated(always=dict(
+        AWS_NO_SIGN_REQUEST="YES",
+        AWS_DEFAULT_REGION="us-west-2",
+        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+    ))
+
     bands = s2_cfg["bands"]
+    quality_band = s2_cfg.get("quality_band", "scl")
     stack = stackstac.stack(
-        items, assets=bands, resolution=s2_cfg["resolution_m"], bounds_latlon=bbox, dtype="float64", rescale=False
+        items,
+        assets=bands,
+        resolution=s2_cfg["resolution_m"],
+        bounds_latlon=bbox,
+        dtype="float64",
+        fill_value=np.nan,
+        # Scaling is applied explicitly below rather than by stackstac, so the
+        # per-item baseline/offset actually used gets logged and unmapped items
+        # fail loudly instead of being silently mis-scaled.
+        rescale=False,
+        gdal_env=gdal_env,
     )
     cube = stack.to_dataset(dim="band")
     cube = cube.rio.write_crs(cube.rio.crs)
 
-    # Reflectance bands are scaled 0-10000 in L2A; SCL is a class label and must not be scaled.
-    bands_to_scale = [b for b in bands if b != "scl"]
-    cube[bands_to_scale] /= 10000
+    # SCL is a categorical class label and must not be scaled.
+    cube = _apply_s2_boa_scaling(cube, items, bands, quality_band=quality_band)
     cube = cube.chunk({"time": -1})
 
     logger.info("Cube size: %.2f GB", cube.nbytes / 1e9)
     return cube, bbox, point
-
-
+    
 def mask_sentinel2(handler, vprm_inst, cfg):
     """Determine the dominant SCL class per pixel across time; mask indices where it's water."""
     s2_cfg = source_cfg(cfg)

@@ -44,6 +44,7 @@ paths:
   copernicus_land_cover_tif: "./data/PROBAV_LC100_global_v3.0.1_2019-nrt_Discrete-Classification-map_EPSG-4326.tif"
   output_base_dir: "./out"
   training_data_filename: "training_data.nc"
+  inference_data_filename: "out_no_footprint.nc"
   canopy_height: "./data/canopy_height"
 
 training:

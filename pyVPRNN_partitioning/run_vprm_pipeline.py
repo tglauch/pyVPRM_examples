@@ -73,6 +73,8 @@ def parse_args():
     p.add_argument("--make-plots", action="store_true", help="Save quicklook + example footprint plots")
     p.add_argument("--overwrite-landcover-cache", action="store_true",
                     help="Force recompute of the land-cover regridding cache even if present")
+    p.add_argument("--no_footprint", action="store_true",
+                    help="Do not calculate the footprint in input data generation")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
@@ -115,6 +117,8 @@ def get_earthdatahub_token():
 # ---------------------------------------------------------------------------
 
 def load_flux_tower(cfg):
+    import pyVPRM
+    print(pyVPRM.__path__)
     from pyVPRM.flux_tower_libs.flux_tower_class import fluxnet_shuttle
 
     site = cfg["site"]["id"]
@@ -191,7 +195,6 @@ def compute_footprint(flux_tower_inst, cfg):
     )
     return ffp_handler, footprint_size
 
-
 # ---------------------------------------------------------------------------
 # Stage 4 (optional quicklook)
 # ---------------------------------------------------------------------------
@@ -215,7 +218,6 @@ def save_rgb_quicklook(cube, cfg, out_path):
     ax.axis("off")
     fig.savefig(out_path, dpi=cfg["advanced"]["plotting"]["quicklook_dpi"], bbox_inches="tight")
     plt.close(fig)
-
 
 # ---------------------------------------------------------------------------
 # Stage 5-6: VPRM satellite index processing + quality masking
@@ -279,7 +281,6 @@ def save_nirv_quicklook(vprm_inst, cfg, out_path):
     ax.set_ylabel("")
     fig.savefig(out_path, dpi=cfg["advanced"]["plotting"]["quicklook_dpi"], bbox_inches="tight")
     plt.close(fig)
-
 
 # ---------------------------------------------------------------------------
 # Stage 7: land cover
@@ -390,7 +391,6 @@ def prepare_land_cover_output_paths(base_path, cfg):
 
     return veg_file, regridder_path
 
-
 # ---------------------------------------------------------------------------
 # Stage 8: meteorology
 # ---------------------------------------------------------------------------
@@ -421,14 +421,13 @@ def fetch_full_meteorology(flux_tower_inst, cfg, token):
         lon_slice=lon_slice,
     )
 
-
 # ---------------------------------------------------------------------------
 # Stage 9: final training dataset
 # ---------------------------------------------------------------------------
 
 def build_training_dataset(vprm_inst, met_inst, ffp_handler, flux_tower_inst, base_path, meteo_vars, cfg):
     from pyVPRM.vprm_models.pyvprnn_v1 import pyvprnn_v1
-
+    print('ffp handler 2', ffp_handler)
     pyvprnn_inst = pyvprnn_v1()
     pyvprnn_inst.get_training_data(
         vprm_pre=vprm_inst,
@@ -492,7 +491,6 @@ def make_example_footprint_plot(pyvprnn_inst, cfg, out_path):
     plt.close(fig)
     logger.info("Saved example footprint plot to %s", out_path)
 
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -521,7 +519,10 @@ def main():
 
     load_flux_tower_data(flux_tower_inst, cfg, token)
 
-    ffp_handler, footprint_size = compute_footprint(flux_tower_inst, cfg)
+    if args.no_footprint:
+        ffp_handler, footprint_size = None, 200
+    else:
+        ffp_handler, footprint_size = compute_footprint(flux_tower_inst, cfg)
     logger.info("Site %s | footprint size %.0f m | satellite source %s",
                 site, footprint_size, cfg["satellite"]["source"])
 
@@ -549,9 +550,15 @@ def main():
     # --- meteorology + final dataset -------------------------------------------
     met_inst = fetch_full_meteorology(flux_tower_inst, cfg, token)
     meteo_vars = build_meteo_transforms(cfg)
-
+    
+    print('FFP handler', ffp_handler)
     pyvprnn_inst = build_training_dataset(vprm_inst, met_inst, ffp_handler, flux_tower_inst, base_path, meteo_vars, cfg)
-    save_training_dataset(pyvprnn_inst, os.path.join(base_path, cfg["paths"]['training_data_filename']))
+
+    if args.no_footprint:
+        opath = os.path.join(base_path, cfg["paths"]['inference_data_filename'])
+    else:
+        opath = os.path.join(base_path, cfg["paths"]['training_data_filename'])
+    save_training_dataset(pyvprnn_inst, opath)
 
     if cfg["plotting"]["enabled"]:
         make_example_footprint_plot(pyvprnn_inst, cfg, os.path.join(figure_dir,

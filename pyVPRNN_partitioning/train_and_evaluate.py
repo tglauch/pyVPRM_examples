@@ -47,9 +47,11 @@ logger = logging.getLogger("train_and_evaluate")
 # Setup helpers
 # ---------------------------------------------------------------------------
 
-def parse_args():
+def parse_args(): 
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", default="config.yaml", help="Path to YAML config file")
+    p.add_argument("--no_footprint", action="store_true",
+                    help="If set run for all datapoints without requiring a footprint")
     p.add_argument("--site", default=None, help="Override site.id from config")
     p.add_argument("--model", default=None, choices=["pyvprnn_v1", "pyvprnn_v2", "pyvprnn_v3"],
                     help="Override model.version from config")
@@ -101,19 +103,19 @@ def setup_determinism(cfg):
 # Dataset loading / preparation
 # ---------------------------------------------------------------------------
 
-def load_training_dataset(base_path, cfg, t_start=None, t_stop=None, model="pyvprnn_v1"):
+def load_training_dataset(base_path, cfg, filename, t_start=None, t_stop=None,
+                          model="pyvprnn_v1"):
     pyvprnn_cls, _, _ = resolve_pyvprnn_model(model)
 
-    ds_path = os.path.join(base_path, cfg["paths"]["training_data_filename"])
+    ds_path = os.path.join(base_path, filename)
     ds = xr.open_dataset(ds_path)
 
     if t_start is not None or t_stop is not None:
         # slice(None, x) / slice(x, None) are open-ended on whichever side
         # is None, so this works whether one or both bounds are given.
-        ds = ds.sel(
-            datetime_utc=slice(t_start, t_stop),
-            t=slice(t_start, t_stop),
-        )
+        time_slice = slice(t_start, t_stop)
+        indexers = {dim: time_slice for dim in ("datetime_utc", "t") if dim in ds.indexes}
+        ds = ds.sel(indexers)
 
     # The satellite indices come out of the Kalman gap-filling step as
     # float64; cast back to float32 to match what the model was built for
@@ -190,7 +192,8 @@ def train_or_load_folds(pyvprnn_inst, outpath, cfg):
 # Inference
 # ---------------------------------------------------------------------------
 
-def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1", fixed_footprint=None):
+def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1",
+                  fixed_footprint=None, dynamic_footprint=True):
     """
     Run the currently-loaded model over every timestep in ds_source (or
     pyvprnn_inst.ds_cropped if not given), aggregating each pixel-level
@@ -246,9 +249,10 @@ def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1", fixed_f
             predict = pyvprnn_inst.pixel_model.predict_on_batch([Xsat, Xstatic, Xmet, Xsw_in_pot, flux_mask])
  
         gpp, reco = predict[0].squeeze(), predict[1].squeeze()
- 
-        results_gpp.append(footprint_weighted_sum(gpp, footprint))
-        results_reco.append(footprint_weighted_sum(reco, footprint))
+        
+        if dynamic_footprint:
+            results_gpp.append(footprint_weighted_sum(gpp, footprint))
+            results_reco.append(footprint_weighted_sum(reco, footprint))
  
         if fixed_footprint is not None:
             # fixed_footprint is (H, W), broadcasts against gpp/reco's
@@ -268,13 +272,13 @@ def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1", fixed_f
  
     sorted_idx = np.argsort(times)
     times_sorted = times[sorted_idx]
- 
-    results = {
-        "dynamic": (
+
+    results = {}
+    if dynamic_footprint:
+        results["dynamic"] = (
             np.concatenate(results_gpp)[sorted_idx],
             np.concatenate(results_reco)[sorted_idx],
         )
-    }
     if fixed_footprint is not None:
         results["fixed"] = (
             np.concatenate(results_gpp_fixed)[sorted_idx],
@@ -284,27 +288,41 @@ def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1", fixed_f
     return times_sorted, results, example_batch
 
 
-def assign_predictions(ds_cropped, times_sorted, gpp_sorted, reco_sorted, model="pyvprnn_v1"):
-    gpp_da = xr.DataArray(gpp_sorted, coords={"t": times_sorted}, dims=["t"]).reindex(
-        t=ds_cropped["t"].values, fill_value=np.nan
+def assign_predictions(ds_cropped, times_sorted, gpp_sorted, reco_sorted,
+                       model="pyvprnn_v1", align_on='t'):
+    gpp_da = xr.DataArray(gpp_sorted, coords={align_on: times_sorted}, dims=[align_on]).reindex(
+        t=ds_cropped[align_on].values, fill_value=np.nan
     )
-    reco_da = xr.DataArray(reco_sorted, coords={"t": times_sorted}, dims=["t"]).reindex(
-        t=ds_cropped["t"].values, fill_value=np.nan
+    reco_da = xr.DataArray(reco_sorted, coords={align_on: times_sorted}, dims=[align_on]).reindex(
+        t=ds_cropped[align_on].values, fill_value=np.nan
     )
     return ds_cropped.assign(**{
         f"{model}_gpp": gpp_da,
         f"{model}_reco": reco_da,
     })
 
-def save_cropped_dataset(ds_cropped, out_path):
-    coords_to_drop = [c for c in ds_cropped.coords if c not in ds_cropped.dims and c != "days_since_t0"]
+
+def save_cropped_dataset(ds_cropped, out_path, overwrite=True):
+    if os.path.exists(out_path) and not overwrite:
+        raise FileExistsError(out_path)
+
+    coords_to_drop = [c for c in ds_cropped.coords
+                      if c not in ds_cropped.dims and c != "days_since_t0"]
     to_save = ds_cropped.reset_coords(coords_to_drop, drop=True)
     for v in to_save.variables.values():
         v.encoding = {}
-    to_save.to_netcdf(out_path)
+
+    tmp = out_path + ".tmp"
+    try:
+        to_save.to_netcdf(tmp)
+        os.replace(tmp, out_path)  # atomic on the same filesystem
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
     logger.info("Wrote cropped prediction dataset to %s", out_path)
     return to_save
-
 
 # ---------------------------------------------------------------------------
 # Diurnal cycle plot
@@ -533,8 +551,16 @@ def main():
     os.makedirs(figure_dir, exist_ok=True)
 
     # --- data ------------------------------------------------------------------
-    pyvprnn_inst = load_training_dataset(base_path, cfg, t_start=args.t_start, t_stop=args.t_stop, model=model)
-    pyvprnn_inst.prepare_base_dataset(nee_qc_flags=cfg["training"]["nee_qc_flags"])
+    if args.no_footprint:
+        filename = cfg["paths"]["inference_data_filename"]  
+        mft = None
+    else:
+        filename = cfg["paths"]["training_data_filename"]
+        mft = 0.925
+    pyvprnn_inst = load_training_dataset(base_path, cfg, filename, t_start=args.t_start,
+                                         t_stop=args.t_stop, model=model)
+    pyvprnn_inst.prepare_base_dataset(nee_qc_flags=cfg["training"]["nee_qc_flags"],
+                                      mass_fraction_threshold=mft)
     pyvprnn_inst.split_train_val_test(
         k=cfg["training"]["kfold"], val_frac=cfg["training"]["val_frac"], test_frac=cfg["training"]["test_frac"]
     )
@@ -551,12 +577,18 @@ def main():
 
     # --- inference ---------------------------------------------------------------
     eval_cfg = cfg["evaluation"]
+    if args.no_footprint:
+        dynamic_footprint=False
+    else:
+        dynamic_footprint=True
     if eval_cfg["aggregate_folds"] and cfg["training"]["kfold"] > 1:
         all_times = []
         all_results = {"dynamic": ([], []), "fixed": ([], [])}
         for k, model_path in model_paths.items():
             pyvprnn_inst.load_model(model_path)
-            t, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model, fixed_footprint=fixed_footprint)
+            t, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model,
+                                                      fixed_footprint=fixed_footprint,
+                                                      dynamic_footprint=dynamic_footprint)
             all_times.append(t)
             for key in all_results:
                 g, r = results[key]
@@ -578,23 +610,37 @@ def main():
     else:
         primary_model_path = model_paths[eval_cfg["fold"]]
         pyvprnn_inst.load_model(primary_model_path)
-        times_sorted, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model, fixed_footprint=fixed_footprint)
+        times_sorted, results, example_batch = run_inference(pyvprnn_inst, cfg, model=model, 
+                                                             fixed_footprint=fixed_footprint,
+                                                             dynamic_footprint=dynamic_footprint)
  
     # Dynamic-footprint predictions keep the existing model naming
     # (e.g. "pyvprnn_v1_gpp") - fixed-footprint predictions get a distinct
     # suffix so both live side by side in the same saved dataset without
     # colliding.
-    gpp_dyn, reco_dyn = results["dynamic"]
     gpp_fixed, reco_fixed = results["fixed"]
- 
-    pyvprnn_inst.ds_cropped = assign_predictions(
-        pyvprnn_inst.ds_cropped, times_sorted, gpp_dyn, reco_dyn, model=model
-    )
-    pyvprnn_inst.ds_cropped = assign_predictions(
-        pyvprnn_inst.ds_cropped, times_sorted, gpp_fixed, reco_fixed, model=f"{model}_fixedfp"
-    )
 
-    ds_cropped_path = os.path.join(outpath, "ds_cropped_{}.nc".format(args.add_to_outfile))
+
+    if not args.no_footprint:
+        pyvprnn_inst.ds_cropped = assign_predictions(
+            pyvprnn_inst.ds_cropped, times_sorted, gpp_fixed, reco_fixed, model=f"{model}_fixedfp"
+        )
+        gpp_dyn, reco_dyn = results["dynamic"]
+        pyvprnn_inst.ds_cropped = assign_predictions(
+            pyvprnn_inst.ds_cropped, times_sorted, gpp_dyn, reco_dyn, model=model
+        )
+    else:
+        pyvprnn_inst.ds_cropped = assign_predictions(
+            pyvprnn_inst.ds_cropped, times_sorted, gpp_fixed, reco_fixed,
+            model=f"{model}_fixedfp", align_on='datetime_utc'
+        )
+
+    if args.no_footprint:
+        base, ext = os.path.splitext(cfg["paths"]["inference_data_filename"])
+        suffix = f"_{args.add_to_outfile}" if args.add_to_outfile else ""
+        ds_cropped_path = os.path.join(outpath, f"{base}{suffix}{ext}")
+    else:
+        ds_cropped_path = os.path.join(outpath, "ds_cropped_{}.nc".format(args.add_to_outfile))
     saved_ds = save_cropped_dataset(pyvprnn_inst.ds_cropped, ds_cropped_path)
 
     if not cfg["plotting"]["enabled"]:

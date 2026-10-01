@@ -29,25 +29,32 @@ To add a new source:
 """
 
 import logging
+import os
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 
+import dask
 import numpy as np
+import pandas as pd
+import requests
 import xarray as xr
 import geopandas as gpd
 import stackstac
 from pystac_client import Client
+from pyproj import Transformer
 from shapely.geometry import Point
-import planetary_computer
 from utils import make_bbox
-import sys
 from stackstac.rio_reader import DEFAULT_GDAL_ENV
 
 logger = logging.getLogger("vprm_pipeline")
 
+
 def ensure_pyvprm_importable(cfg):
     """
     Make sure `import pyVPRM` (and pyVPRM.sat_managers.*) will succeed.
- 
+
     If pyVPRM is pip-installed, this is a no-op. If it isn't, fall back to
     cfg["paths"]["pyvprm_repo_path"] - the path to a local pyVPRM checkout -
     added to sys.path so it can be imported like a normal package.
@@ -57,7 +64,7 @@ def ensure_pyvprm_importable(cfg):
         return
     except ImportError:
         pass
- 
+
     repo_path = cfg.get("paths", {}).get("pyvprm_repo_path")
     if not repo_path:
         raise ImportError(
@@ -66,14 +73,22 @@ def ensure_pyvprm_importable(cfg):
         )
     if repo_path not in sys.path:
         sys.path.insert(0, repo_path)
- 
-    import pyVPRM  # noqa: F401  - retry now that repo_path is on sys.path
 
+    import pyVPRM  # noqa: F401  - retry now that repo_path is on sys.path
 
 
 def source_cfg(cfg):
     """The advanced-settings block for whichever source is currently selected."""
     return cfg["advanced"]["satellite"][cfg["satellite"]["source"]]
+
+
+def _search_window(flux_tower_inst, buffer_days):
+    """Tower record extended by `buffer_days` on both sides, as ISO date strings."""
+    t0 = (flux_tower_inst.flux_data["datetime_utc"].iloc[0]
+          - timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+    t1 = (flux_tower_inst.flux_data["datetime_utc"].iloc[-1]
+          + timedelta(days=buffer_days)).strftime("%Y-%m-%d")
+    return t0, t1
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +176,7 @@ def _apply_s2_boa_scaling(cube, items, bands, quality_band="scl"):
     logger.info("Applied BOA offsets: %s", sorted(offsets_seen))
     return cube
 
+
 def fetch_sentinel2_stack(flux_tower_inst, footprint_size, cfg):
     s2_cfg = source_cfg(cfg)
     lat, lon = flux_tower_inst.lat, flux_tower_inst.lon
@@ -169,10 +185,7 @@ def fetch_sentinel2_stack(flux_tower_inst, footprint_size, cfg):
     mgrs = _find_mgrs_tile(point, cfg["paths"]["sentinel_tile_shapefile"])
     logger.info("Using MGRS tile: %s", mgrs)
 
-    buffer_days = s2_cfg["search_buffer_days"]
-    t0 = (flux_tower_inst.flux_data["datetime_utc"].iloc[0] - timedelta(days=buffer_days)).strftime("%Y-%m-%d")
-    t1 = (flux_tower_inst.flux_data["datetime_utc"].iloc[-1] + timedelta(days=buffer_days)).strftime("%Y-%m-%d")
-
+    t0, t1 = _search_window(flux_tower_inst, s2_cfg["search_buffer_days"])
     bbox = make_bbox(lat, lon, footprint_size)
 
     catalog = Client.open(s2_cfg["stac_endpoint"])
@@ -222,7 +235,8 @@ def fetch_sentinel2_stack(flux_tower_inst, footprint_size, cfg):
 
     logger.info("Cube size: %.2f GB", cube.nbytes / 1e9)
     return cube, bbox, point
-    
+
+
 def mask_sentinel2(handler, vprm_inst, cfg):
     """Determine the dominant SCL class per pixel across time; mask indices where it's water."""
     s2_cfg = source_cfg(cfg)
@@ -245,132 +259,356 @@ def mask_sentinel2(handler, vprm_inst, cfg):
     vprm_inst.calc_min_max_evi_lswi()
 
 
+# ---------------------------------------------------------------------------
+# RGB quicklook (source-aware)
+# ---------------------------------------------------------------------------
+
 def rgb_quicklook_index(cube, cfg):
-    """Timestep with the most pixels in the 'valid' class, as a rough cloud-free proxy."""
-    s2_cfg = source_cfg(cfg)
-    valid_code = s2_cfg["scl_classes"][s2_cfg["rgb_quicklook_valid_class"]]
-    valid_count = (cube.scl == valid_code).sum(dim=("y", "x"))
+    """
+    Timestep with the most 'clear' pixels, as a rough cloud-free proxy.
+
+    Sentinel-2 uses the SCL class named in rgb_quicklook_valid_class; HLS has no
+    categorical class layer, so clear means "no QA bit set" in Fmask (bits 0-5:
+    cirrus, cloud, adjacent cloud/shadow, shadow, snow/ice, water - the aerosol
+    bits 6-7 are deliberately ignored).
+    """
+    source = cfg["satellite"]["source"]
+    src = source_cfg(cfg)
+
+    if source == "hls":
+        fmask = cube[src["quality_band"]]
+        clear = (fmask.fillna(255).astype("int32") & 0b0011_1111) == 0
+        valid_count = clear.sum(dim=("y", "x"))
+    else:
+        valid_code = src["scl_classes"][src["rgb_quicklook_valid_class"]]
+        valid_count = (cube[src.get("quality_band", "scl")] == valid_code).sum(dim=("y", "x"))
+
     ind = int(valid_count.argmax(dim="time").values)
-    logger.info("Quicklook timestep index %d (valid pixel count: %d)", ind, int(valid_count.max()))
+    logger.info("Quicklook timestep index %d (valid pixel count: %d)",
+                ind, int(valid_count.max()))
     return ind
 
 
 # ---------------------------------------------------------------------------
-# HLS (Harmonized Landsat Sentinel-2)
+# HLS (Harmonized Landsat Sentinel-2) - NASA Earthdata / LP DAAC
 # ---------------------------------------------------------------------------
-# Unlike earth-search's Sentinel-2 collection (which already exposes common
-# band names like "red"/"nir08"), Planetary Computer's raw HLS assets are
-# keyed by band code (B01, B04, ...), and the L30 (Landsat) and S30
-# (Sentinel-2) collections use *different* codes for the same physical band
-# (e.g. NIR is B05 on L30 but B08 on S30). We rename each item's assets to a
-# shared set of common names before stacking, so both collections stack
-# together cleanly and advanced.satellite.hls.band_map can reference plain
-# names ("nir", "swir1", ...) the same way the Sentinel-2 block does.
+# Source is LP DAAC's CMR STAC, not Planetary Computer: PC's hls2-* mirror only
+# starts in 2020, while LP DAAC holds the full v2.0 archive (L30 from
+# 2013-04-11, S30 from 2015-11-28).
+#
+# Three things make this more involved than the Sentinel-2 path above:
+#
+#  1. Auth. Assets sit behind Earthdata Login. LP DAAC answers a data request
+#     with a redirect to a short-lived pre-signed CloudFront URL, and GDAL
+#     cannot follow that reliably - it caches HEAD-signed redirects and reuses
+#     them for GET (403), and an Authorization header sent along to the signed
+#     URL is rejected as well. So the redirects are resolved here with requests
+#     (bearer token, allow_redirects=False) and stackstac only ever sees plain
+#     signed URLs needing no auth.
+#  2. Expiry. Those signed URLs are valid ~1 h, so the date range is walked in
+#     chunks (advanced.satellite.hls.chunk_freq) that are searched, signed and
+#     read back-to-back, then concatenated.
+#  3. Band names. L30 and S30 use different band codes for the same physical
+#     band, and CMR STAC exposes raw codes only (no common-name aliases), so
+#     assets are renamed before stacking.
+#
+# Requires an Earthdata token in EARTHDATA_TOKEN (Profile -> Generate Token at
+# https://urs.earthdata.nasa.gov). Tokens expire after 60 days.
+
+_HLS_CMR_STAC = "https://cmr.earthdata.nasa.gov/stac/LPCLOUD"
+
+# First acquisition in each HLS v2.0 collection.
+_HLS_ARCHIVE_START = {"HLSL30_2.0": "2013-04-11", "HLSS30_2.0": "2015-11-28"}
+
+# Raw LP DAAC asset keys -> common names. "nir" deliberately maps to S30's B8A
+# (narrow NIR), not B08: B8A is the band HLS bandpass-adjusts to OLI, so it is
+# the harmonized counterpart of L30's B05. L30 has no red-edge bands at all,
+# which is why rededge* (and the ndre index) cannot be used in a mixed stack.
 _HLS_BAND_CROSSWALK = {
-    "hls2-l30": {
-        "B01": "coastal",
-        "B02": "blue",
-        "B03": "green",
-        "B04": "red",
-        "B05": "nir",
-        "B06": "swir1",
-        "B07": "swir2",
-        "B09": "cirrus",
-        "B10": "thermal1",
-        "B11": "thermal2",
-        "Fmask": "Fmask",
+    "L30": {
+        "B01": "coastal", "B02": "blue", "B03": "green", "B04": "red",
+        "B05": "nir", "B06": "swir16", "B07": "swir22",
+        "B09": "cirrus", "B10": "lwir11", "B11": "lwir12", "Fmask": "Fmask",
     },
-    "hls2-s30": {
-        "B01": "coastal",
-        "B02": "blue",
-        "B03": "green",
-        "B04": "red",
-        "B05": "rededge1",
-        "B06": "rededge2",
-        "B07": "rededge3",
-        "B08": "nir",         # NIR-broad: shared with L30's B05, not bandpass-adjusted
-        "B8A": "nir_narrow",  # Sentinel-only, no Landsat equivalent
-        "B09": "watervapor",
-        "B10": "cirrus",
-        "B11": "swir1",
-        "B12": "swir2",
-        "Fmask": "Fmask",
+    "S30": {
+        "B01": "coastal", "B02": "blue", "B03": "green", "B04": "red",
+        "B05": "rededge1", "B06": "rededge2", "B07": "rededge3",
+        "B08": "nir08_broad", "B8A": "nir", "B09": "wvp", "B10": "cirrus",
+        "B11": "swir16", "B12": "swir22", "Fmask": "Fmask",
     },
 }
- 
- 
+
+# Reflectance is stored as int16 with scale 0.0001 and fill -9999; Fmask is a
+# bit-packed QA band and must not be scaled.
+_HLS_REFLECTANCE_BANDS = {
+    "coastal", "blue", "green", "red", "nir", "nir08_broad",
+    "rededge1", "rededge2", "rededge3", "swir16", "swir22", "cirrus",
+}
+_HLS_SCALE = np.float32(1e-4)
+_HLS_FILL = -9999
+
+# GDAL settings for reading the pre-signed URLs. CPL_VSIL_CURL_USE_HEAD="NO"
+# is the important one: with HEAD enabled GDAL caches a HEAD-signed redirect
+# and then reuses it for the range GETs, which CloudFront rejects with 403.
+_HLS_GDAL_ENV = dict(
+    GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+    CPL_VSIL_CURL_USE_HEAD="NO",
+    GDAL_HTTP_MAX_RETRY="5",
+    GDAL_HTTP_RETRY_DELAY="2",
+)
+
+_hls_thread_local = threading.local()
+
+
+def _hls_token():
+    token = os.environ.get("EARTHDATA_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError(
+            "EARTHDATA_TOKEN is not set - HLS from LP DAAC needs an Earthdata "
+            "Login token (https://urs.earthdata.nasa.gov -> Generate Token). "
+            "Tokens expire after 60 days."
+        )
+    return token
+
+
+def _hls_product(item):
+    key = f"{item.collection_id or ''} {item.id}"
+    if "L30" in key:
+        return "L30"
+    if "S30" in key:
+        return "S30"
+    raise ValueError(f"Cannot determine HLS product for item {item.id}")
+
+
 def _harmonize_hls_band_names(items):
     """Rename each item's assets in place from raw band codes to shared common names."""
     for item in items:
-        crosswalk = _HLS_BAND_CROSSWALK.get(item.collection_id)
-        if crosswalk is None:
-            continue
-        for raw_key, common_name in crosswalk.items():
-            if raw_key in item.assets and raw_key != common_name:
-                item.assets[common_name] = item.assets.pop(raw_key)
+        xwalk = _HLS_BAND_CROSSWALK[_hls_product(item)]
+        item.assets = {xwalk.get(k, k): v for k, v in item.assets.items()}
     return items
- 
+
+
+def _hls_date_chunks(start_date, end_date, freq="YS"):
+    """Split [start, end] into non-overlapping inclusive periods."""
+    start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+    if end < start:
+        return []
+    edges = [start] + [t for t in pd.date_range(start, end, freq=freq) if t > start]
+    periods = []
+    for i, s in enumerate(edges):
+        e = edges[i + 1] - pd.Timedelta(days=1) if i + 1 < len(edges) else end
+        periods.append((s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d")))
+    return periods
+
+
+def _hls_utm_epsg(bbox):
+    lon = (bbox[0] + bbox[2]) / 2
+    lat = (bbox[1] + bbox[3]) / 2
+    return (32600 if lat >= 0 else 32700) + int((lon + 180) // 6) + 1
+
+
+def _hls_snapped_bounds(bbox, epsg, resolution):
+    """
+    Fixed bounds in the target CRS, snapped outward to the pixel grid.
+
+    Given bounds_latlon, stackstac derives the grid from the items it was
+    handed, so the x/y size can differ by a pixel between chunks and the
+    concat below would fail. Identical, grid-snapped bounds for every chunk
+    avoid that.
+    """
+    t = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    pts = [t.transform(x, y) for x in (bbox[0], bbox[2]) for y in (bbox[1], bbox[3])]
+    xs, ys = zip(*pts)
+    return (float(np.floor(min(xs) / resolution) * resolution),
+            float(np.floor(min(ys) / resolution) * resolution),
+            float(np.ceil(max(xs) / resolution) * resolution),
+            float(np.ceil(max(ys) / resolution) * resolution))
+
+
+def _search_hls_items(bbox, start_date, end_date, collections, max_cloud_cover=None):
+    """CMR STAC search. CMR has no `query` extension, so cloud filtering is client-side."""
+    catalog = Client.open(_HLS_CMR_STAC)
+    search = catalog.search(
+        collections=list(collections),
+        bbox=list(bbox),
+        datetime=f"{start_date}/{end_date}",
+        limit=100,   # page size; CMR STAC is slow with large pages
+    )
+    items = list(search.items())
+
+    if max_cloud_cover is not None:
+        items = [i for i in items
+                 if i.properties.get("eo:cloud_cover") is None
+                 or i.properties["eo:cloud_cover"] < max_cloud_cover]
+
+    items = list({i.id: i for i in items}.values())   # CMR can return duplicates
+    items.sort(key=lambda i: i.datetime)
+    return _harmonize_hls_band_names(items)
+
+
+def _hls_session():
+    if not hasattr(_hls_thread_local, "session"):
+        _hls_thread_local.session = requests.Session()
+    return _hls_thread_local.session
+
+
+def _resolve_signed_url(href, token, retries=3):
+    last = None
+    for _ in range(retries):
+        try:
+            r = _hls_session().get(href, headers={"Authorization": f"Bearer {token}"},
+                                   allow_redirects=False, stream=True, timeout=60)
+            r.close()
+            if r.status_code in (301, 302, 303, 307, 308):
+                return r.headers["location"]
+            last = f"HTTP {r.status_code}"
+            if r.status_code in (401, 403):
+                break  # token problem, retrying won't help
+        except requests.RequestException as e:
+            last = repr(e)
+    raise RuntimeError(f"Could not sign {href}: {last}")
+
+
+def _presign_hls_items(items, bands, token, max_workers=8):
+    """
+    Replace asset hrefs with pre-signed CloudFront URLs (valid ~1 h).
+    Assets that fail to sign are dropped and reported, so one broken granule
+    does not abort a multi-year run.
+    """
+    jobs = [(item, b) for item in items for b in bands if b in item.assets]
+
+    def work(job):
+        item, b = job
+        try:
+            return job, _resolve_signed_url(item.assets[b].href, token), None
+        except RuntimeError as e:
+            return job, None, e
+
+    failed = []
+    with ThreadPoolExecutor(max_workers) as ex:
+        for (item, b), url, err in ex.map(work, jobs):
+            if url is not None:
+                item.assets[b].href = url
+            else:
+                failed.append((item.id, b, str(err)))
+                del item.assets[b]
+
+    if any("HTTP 401" in f[2] or "HTTP 403" in f[2] for f in failed):
+        raise RuntimeError(f"Earthdata authorization failed (check token): {failed[0][2]}")
+    for fid, b, err in failed:
+        logger.warning("HLS asset skipped: %s %s (%s)", fid, b, err)
+
+    # Keep items that still have the quality band and at least one other band;
+    # bands a product simply doesn't have are filled with NaN by stackstac.
+    def usable(i):
+        if "Fmask" in bands and "Fmask" not in i.assets:
+            return False
+        return any(b in i.assets for b in bands if b != "Fmask")
+
+    return [i for i in items if usable(i)]
+
+
+def _load_hls_chunk(items, bounds, bands, epsg, resolution, read_workers):
+    """Read one set of already-signed items into memory. `bounds` is in EPSG:<epsg>."""
+    from rasterio.errors import RasterioIOError
+
+    stack = stackstac.stack(
+        items,
+        assets=list(bands),
+        bounds=tuple(bounds),
+        epsg=epsg,
+        resolution=resolution,
+        dtype="float32",
+        fill_value=np.float32("nan"),
+        # rescale=True trips a numpy safe-casting error against HLS's integer
+        # scale/offset metadata (a stackstac quirk) - scaled explicitly below.
+        rescale=False,
+        gdal_env=stackstac.DEFAULT_GDAL_ENV.updated(always=_HLS_GDAL_ENV),
+        # A granule listed in CMR but missing from the archive shouldn't kill
+        # the run; that scene becomes NaN instead.
+        errors_as_nodata=(RasterioIOError("HTTP response code: 404"),),
+    )
+
+    # Keep only light-weight coordinates; the rest are per-item STAC properties
+    # that would otherwise ride along through every later reduction.
+    keep = {"time", "x", "y", "band", "id"}
+    stack = stack.drop_vars([c for c in stack.coords if c not in keep])
+    ids = [str(v) for v in np.atleast_1d(stack["id"].values)]
+    stack = stack.assign_coords(
+        sensor=("time", ["landsat" if ".L30." in i else "sentinel" for i in ids])
+    )
+    stack.attrs = {}
+
+    cube = stack.to_dataset(dim="band")
+    for b in cube.data_vars:
+        if b in _HLS_REFLECTANCE_BANDS:
+            cube[b] = cube[b].where(cube[b] != _HLS_FILL) * _HLS_SCALE
+
+    # Threads, not processes: these are HTTP range reads, and GDAL releases the
+    # GIL while waiting on them.
+    with dask.config.set(scheduler="threads", num_workers=read_workers):
+        return cube.compute()
+
+
 def fetch_hls_stack(flux_tower_inst, footprint_size, cfg):
     hls_cfg = source_cfg(cfg)
     lat, lon = flux_tower_inst.lat, flux_tower_inst.lon
     point = Point(lon, lat)
- 
-    buffer_days = hls_cfg["search_buffer_days"]
-    t0 = (flux_tower_inst.flux_data["datetime_utc"].iloc[0] - timedelta(days=buffer_days)).strftime("%Y-%m-%d")
-    t1 = (flux_tower_inst.flux_data["datetime_utc"].iloc[-1] + timedelta(days=buffer_days)).strftime("%Y-%m-%d")
- 
+
+    token = _hls_token()
+    collections = list(hls_cfg["collections"])
+    bands = list(hls_cfg["bands"])
+    resolution = hls_cfg["resolution_m"]
+    max_cloud_cover = hls_cfg["cloud_cover_max_pct"]
+    sign_workers = hls_cfg.get("sign_workers", 8)
+    read_workers = hls_cfg.get("read_workers", 8)
+
+    t0, t1 = _search_window(flux_tower_inst, hls_cfg["search_buffer_days"])
+
+    # Nothing exists before the first HLS acquisition; asking for it only adds
+    # empty chunks and a search round-trip each.
+    archive_start = min(_HLS_ARCHIVE_START[c] for c in collections)
+    if t0 < archive_start:
+        logger.info("Clamping HLS search start %s -> %s (archive start)", t0, archive_start)
+        t0 = archive_start
+
     bbox = make_bbox(lat, lon, footprint_size)
- 
-    catalog = Client.open(hls_cfg["stac_endpoint"], modifier=planetary_computer.sign_inplace)
-    search = catalog.search(
-        collections=hls_cfg["collections"],
-        bbox=bbox,
-        datetime=f"{t0}/{t1}",
-        query={"eo:cloud_cover": {"lt": hls_cfg["cloud_cover_max_pct"]}},
-    )
-    items = list(search.items())
-    logger.info("Found %d HLS items (L30+S30)", len(items))
-    if not items:
+    epsg = _hls_utm_epsg(bbox)
+    bounds = _hls_snapped_bounds(bbox, epsg, resolution)
+
+    cubes = []
+    for start, end in _hls_date_chunks(t0, t1, hls_cfg.get("chunk_freq", "YS")):
+        items = _search_hls_items(bbox, start, end, collections, max_cloud_cover)
+        if not items:
+            logger.info("HLS %s..%s: no items", start, end)
+            continue
+        items = _presign_hls_items(items, bands, token, sign_workers)
+        if not items:
+            logger.warning("HLS %s..%s: no usable items after signing", start, end)
+            continue
+        cube = _load_hls_chunk(items, bounds, bands, epsg, resolution, read_workers)
+        logger.info("HLS %s..%s: %d scenes", start, end, cube.sizes["time"])
+        cubes.append(cube)
+
+    if not cubes:
         raise RuntimeError("No HLS items found for the requested site/time range.")
- 
-    _harmonize_hls_band_names(items)
- 
-    bands = hls_cfg["bands"]
-    # epsg must be pinned explicitly: bbox searches (unlike the Sentinel-2
-    # single-MGRS-tile search above) can return items from adjacent UTM
-    # zones near tile boundaries, and stackstac needs one common CRS to
-    # stack into. L30/S30 share NASA's MGRS grid, so the first item's zone
-    # is the right choice for a small footprint around one tower.
-    epsg = items[0].properties.get("proj:epsg")
-    stack = stackstac.stack(
-        items,
-        assets=bands,
-        epsg=epsg,
-        resolution=hls_cfg["resolution_m"],
-        bounds_latlon=bbox,
-        dtype="float32",
-        fill_value=np.float32("nan"),
-        # rescale=True trips a numpy safe-casting error against HLS's
-        # integer scale/offset metadata (a stackstac quirk) - we scale to
-        # reflectance ourselves below instead.
-        rescale=False,
-    )
-    cube = stack.to_dataset(dim="band")
-    cube = cube.rio.write_crs(cube.rio.crs)
-    cube = cube.compute() 
- 
-    # HLS reflectance bands are scaled integers (scale factor 0.0001, per
-    # the LP DAAC product spec); Fmask is a bit-packed QA band and must not
-    # be scaled.
-    quality_band = hls_cfg["quality_band"]
-    bands_to_scale = [b for b in bands if b != quality_band]
-    cube[bands_to_scale] *= hls_cfg["reflectance_scale_factor"]
+
+    cube = xr.concat(cubes, dim="time", coords="minimal", compat="override",
+                     join="exact", combine_attrs="drop_conflicts").sortby("time")
+
+    sensors = [str(s) for s in np.atleast_1d(cube["sensor"].values)]
+    logger.info("Found %d HLS scenes (%d L30 + %d S30), %s to %s",
+                cube.sizes["time"], sensors.count("landsat"), sensors.count("sentinel"),
+                str(cube["time"].values[0])[:10], str(cube["time"].values[-1])[:10])
+
+    cube = cube.drop_vars([c for c in ("id", "sensor") if c in cube.coords])
+    cube = cube.rio.write_crs(f"EPSG:{epsg}")
     cube = cube.chunk({"time": -1})
- 
+
     logger.info("Cube size: %.2f GB", cube.nbytes / 1e9)
     return cube, bbox, point
- 
- 
+
+
 def mask_hls(handler, vprm_inst, cfg):
     """
     Permanent water-body exclusion, run post-Kalman - mirrors mask_sentinel2's
@@ -378,7 +616,7 @@ def mask_hls(handler, vprm_inst, cfg):
     vprm_inst.sat_imgs.sat_img, so the resulting mask is (y, x)-only and
     broadcasts safely regardless of what vprm_inst's current temporal
     dimension is called - "time" pre-Kalman, "time_gap_filled" post-Kalman).
- 
+
     Per-timestep QA masking (cloud/adjacent/shadow/snow) does NOT belong
     here: it already happened earlier and correctly, on handler.sat_img's
     original per-scene time axis, via add_sat_img(mask_bad_pixels=True,
@@ -389,7 +627,7 @@ def mask_hls(handler, vprm_inst, cfg):
     "time_gap_filled" dimension post-Kalman - two different, non-aligned
     xarray dimensions - and instead of erroring, xarray silently broadcasts
     across both, producing a spurious 4D result carrying both axes at once.
- 
+
     Fmask's water bit is a per-scene spectral detection, not a stable
     land-cover class like SCL's, so unlike mask_sentinel2 (which reads a
     single categorical class straight off "scl"), this takes a majority
@@ -398,16 +636,15 @@ def mask_hls(handler, vprm_inst, cfg):
     """
     is_water = handler.water_mask()
     dominant_water = is_water.sum(dim="time") > (is_water.sizes["time"] / 2)
- 
+
     vprm_inst.sat_imgs.sat_img["dominant_water"] = dominant_water
     for sat_ind in source_cfg(cfg)["indices"]:
         vprm_inst.sat_imgs.sat_img[sat_ind] = vprm_inst.sat_imgs.sat_img[sat_ind].where(
             ~vprm_inst.sat_imgs.sat_img["dominant_water"]
         )
- 
+
     vprm_inst.calc_min_max_evi_lswi()
 
- 
 
 # ---------------------------------------------------------------------------
 # MODIS (not yet implemented)
@@ -442,20 +679,20 @@ SOURCES = {
     "modis": {"fetch": fetch_modis_stack, "mask": mask_modis},
 }
 
- 
+
 def get_satellite_handler(cube, cfg):
     """Construct the right sat_manager instance (sentinel2/hls/...) for cfg's selected source."""
     ensure_pyvprm_importable(cfg)  # patches sys.path from paths.pyvprm_repo_path if needed
- 
+
     from pyVPRM.sat_managers.sentinel2 import sentinel2
     from pyVPRM.sat_managers.hls import hls
- 
+
     handler_classes = {
         "sentinel2": sentinel2,
         "hls": hls,
         # "modis": modis,  # add once pyVPRM.sat_managers.modis exists
     }
- 
+
     source = cfg["satellite"]["source"]
     handler_cls = handler_classes.get(source)
     if handler_cls is None:
@@ -464,7 +701,7 @@ def get_satellite_handler(cube, cfg):
         )
     return handler_cls(sat_img=cube)
 
-    
+
 def fetch_satellite_stack(flux_tower_inst, footprint_size, cfg):
     return SOURCES[cfg["satellite"]["source"]]["fetch"](flux_tower_inst, footprint_size, cfg)
 

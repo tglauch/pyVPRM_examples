@@ -224,11 +224,14 @@ def load_vprm_land_cover_classes(vprm_config_path):
 
 
 # Model names whose constructor accepts the lag-related kwargs
-# (lagged_met_vars / lag_hours / precip_var). pyvprnn_v1's constructor
-# doesn't accept these at all - they must not be passed when instantiating
-# it. Kept as an explicit set rather than an `== "pyvprnn_v2"` check, since
-# that check itself was the bug that broke when pyvprnn_v3 was added.
-LAGGED_MODEL_NAMES = {"pyvprnn_v2", "pyvprnn_v3"}
+# (lagged_met_vars / lag_hours). pyvprnn_v1's and pyvprnn_v2's constructors
+# don't accept these - they must not be passed when instantiating them.
+LAGGED_MODEL_NAMES = {"pyvprnn_v3"}
+
+# Model names whose constructor accepts precip_var (source of the
+# precipitation API features). pyvprnn_v2 uses precipitation features but
+# no temperature lag history.
+PRECIP_MODEL_NAMES = {"pyvprnn_v2", "pyvprnn_v2_pub", "pyvprnn_v3"}
 
 
 def build_pyvprnn_kwargs(cfg, model_name=None):
@@ -257,13 +260,14 @@ def build_pyvprnn_kwargs(cfg, model_name=None):
     }
 
     model_name = model_name or cfg["model"]["version"]
+    lag_cfg = model_cfg.get("lag", {})
     if model_name in LAGGED_MODEL_NAMES:
-        lag_cfg = model_cfg.get("lag", {})
         kwargs.update({
             "lagged_met_vars": lag_cfg.get("lagged_met_vars"),
             "lag_hours": lag_cfg.get("lag_hours"),
-            "precip_var": lag_cfg.get("precip_var"),
         })
+    if model_name in PRECIP_MODEL_NAMES:
+        kwargs["precip_var"] = lag_cfg.get("precip_var")
 
     return kwargs
 
@@ -281,13 +285,14 @@ def resolve_pyvprnn_model(model_name):
 
     if model_name == "pyvprnn_v1":
         return pyvprnn_v1, BatchGenerator, False
-    if model_name == "pyvprnn_v2":
-        from pyVPRM.vprm_models.pyvprnn_v2 import pyvprnn_v2, LaggedBatchGenerator
-        return pyvprnn_v2, LaggedBatchGenerator, True
+    if model_name in ("pyvprnn_v2", "pyvprnn_v2_pub"):
+        from pyVPRM.vprm_models import pyvprnn_v2 as v2
+        return getattr(v2, model_name), v2.EngineeredBatchGenerator, False
     if model_name == "pyvprnn_v3":
         from pyVPRM.vprm_models.pyvprnn_v3 import pyvprnn_v3, LaggedBatchGenerator
         return pyvprnn_v3, LaggedBatchGenerator, True
-    raise ValueError(f"Unknown model '{model_name}' - expected 'pyvprnn_v1', 'pyvprnn_v2', or 'pyvprnn_v3'.")
+    raise ValueError(f"Unknown model '{model_name}' - expected 'pyvprnn_v1', 'pyvprnn_v2', "
+                     "'pyvprnn_v2_pub', or 'pyvprnn_v3'.")
 
 
 def make_generator(pyvprnn_inst, is_lagged, **kwargs):
@@ -318,6 +323,9 @@ def make_generator(pyvprnn_inst, is_lagged, **kwargs):
             precip_var=pyvprnn_inst.precip_var,
             **kwargs,
         )
+    if model_name in PRECIP_MODEL_NAMES:
+        # non-lagged, but with engineered precipitation features (pyvprnn_v2, pyvprnn_v2_pub)
+        kwargs = {**getattr(pyvprnn_inst, "generator_kwargs", {"precip_var": pyvprnn_inst.precip_var}), **kwargs}
     return generator_cls(
         pyvprnn_inst.ds_cropped, pyvprnn_inst.sat_vars, pyvprnn_inst.met_vars,
         land_cover_classes=pyvprnn_inst.land_cover_classes,

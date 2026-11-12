@@ -16,6 +16,9 @@ in utils.py for the dispatch.
 Usage:
     python train_and_evaluate.py --config config.yaml
     python train_and_evaluate.py --config config.yaml --site GF-Guy --fold 0
+    python train_and_evaluate.py --config config.yaml --site US-Var --counterfactual-no-rain
+        (after training: loads the trained fold models and runs inference with precipitation
+         set to 0; output files and figures get the tag "_norain")
 """
 
 import os
@@ -53,7 +56,7 @@ def parse_args():
     p.add_argument("--no_footprint", action="store_true",
                     help="If set run for all datapoints without requiring a footprint")
     p.add_argument("--site", default=None, help="Override site.id from config")
-    p.add_argument("--model", default=None, choices=["pyvprnn_v1", "pyvprnn_v2", "pyvprnn_v3"],
+    p.add_argument("--model", default=None, choices=["pyvprnn_v1", "pyvprnn_v2", "pyvprnn_v2_pub", "pyvprnn_v3"],
                     help="Override model.version from config")
     p.add_argument("--t-start", default=None, help="Restrict training data to this start date (YYYY-MM-DD) onward")
     p.add_argument("--t-stop", default=None, help="Restrict training data up to this stop date (YYYY-MM-DD)")
@@ -64,6 +67,10 @@ def parse_args():
                     help="Override training.enable_check_numerics=true (slow - NaN/Inf checking on every op)")
     p.add_argument("--model_path", default=None, help="Apply this model")
     p.add_argument("--add_to_outfile", default='', help="some tag to add to the outfile")
+    p.add_argument("--counterfactual-no-rain", action="store_true",
+                    help="Inference only: load the trained model(s) and run them with precipitation set to 0 "
+                         "everywhere (all rain-history / API inputs = 0, every other input observed). "
+                         "Never trains; output files and figures get the tag '_norain'.")
     p.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return p.parse_args()
 
@@ -129,14 +136,14 @@ def load_training_dataset(base_path, cfg, filename, t_start=None, t_stop=None,
     fill_missing_jointunc(pyvprnn_inst.ds)
     return pyvprnn_inst
 
-
 def fill_missing_jointunc(ds, missing_value=-9999.0):
-    """Replace FLUXNET's missing-value sentinel in NEE_VUT_REF_JOINTUNC with the site mean uncertainty."""
-    data = ds["NEE_VUT_REF_JOINTUNC"].data
-    valid = data != missing_value
-    if not valid.any():
-        raise ValueError("NEE_VUT_REF_JOINTUNC has no valid (non-sentinel) values to average.")
-    ds["NEE_VUT_REF_JOINTUNC"].data = np.where(data == missing_value, data[valid].mean(), data)
+    """Replace FLUXNET's missing-value sentinel (and NaN) in NEE_VUT_REF_RANDUNC with the site mean uncertainty.
+    A single NaN sigma makes the loss NaN for the whole batch."""
+    data = ds["NEE_VUT_REF_RANDUNC"].data
+    bad = (data == missing_value) | ~np.isfinite(data)
+    if bad.all():
+        raise ValueError("NEE_VUT_REF_RANDUNC has no valid values to average.")
+    ds["NEE_VUT_REF_RANDUNC"].data = np.where(bad, data[~bad].mean(), data)
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +231,7 @@ def run_inference(pyvprnn_inst, cfg, ds_source=None, model="pyvprnn_v1",
         times=pyvprnn_inst.common_times,
         shuffle=True,
         target="NEE_VUT_REF",
-        unc="NEE_VUT_REF_JOINTUNC",
+        unc="NEE_VUT_REF_RANDUNC",
     )
     # NOTE: make_generator reads pyvprnn_inst.ds_cropped internally, not
     # ds_cropped/ds_source above - if you need to run inference over a
@@ -438,7 +445,8 @@ def make_diurnal_cycle_plot(ds_cropped, cfg, site, out_path, model="pyvprnn_v1")
 # PDP / ICE
 # ---------------------------------------------------------------------------
 
-def make_pdp_ice_plot(ds_cropped_path, cfg, site, model_path, out_path, model="pyvprnn_v1"):
+def make_pdp_ice_plot(ds_cropped_path, cfg, site, model_path, out_path, model="pyvprnn_v1",
+                      counterfactual_no_rain=False):
     from pyVPRM.lib.fancy_plot import figsize
     import plotting_functions
 
@@ -456,6 +464,8 @@ def make_pdp_ice_plot(ds_cropped_path, cfg, site, model_path, out_path, model="p
         pyvprnn_inst_pdp.set_ds(cropped)
 
     pyvprnn_inst_pdp.load_model(model_path)
+    if counterfactual_no_rain:
+        pyvprnn_inst_pdp.set_counterfactual(zero_precip=True)
     pyvprnn_inst_pdp.ds.compute()
     pyvprnn_inst_pdp.prepare_base_dataset(chunks_t=None, nee_qc_flags=cfg["training"]["nee_qc_flags"])
     pyvprnn_inst_pdp.split_train_val_test(k=1, val_frac=0.0, test_frac=0.0)
@@ -519,6 +529,7 @@ def main():
 
     site = cfg["site"]["id"]
     model = cfg["model"]["version"]
+    cf_tag = "norain" if args.counterfactual_no_rain else ""
 
     # NOTE: land_cover_type isn't known until the pipeline loads the flux
     # tower, so unlike run_vprm_pipeline.py we can't derive base_path from
@@ -547,7 +558,7 @@ def main():
     # pixel_model_*.keras / training_history_*.csv.
     outpath = os.path.join(base_path, f"{model}{range_tag}")
     os.makedirs(outpath, exist_ok=True)
-    figure_dir = os.path.join(base_path, 'figures')
+    figure_dir = os.path.join(base_path, 'figures' + (f"_{cf_tag}" if cf_tag else ""))
     os.makedirs(figure_dir, exist_ok=True)
 
     # --- data ------------------------------------------------------------------
@@ -568,6 +579,17 @@ def main():
     fixed_footprint = build_fixed_footprint(pyvprnn_inst.ds_cropped, half_size=2)
     
     # --- train (or load) each fold ----------------------------------------------
+    if args.counterfactual_no_rain:
+        if not hasattr(pyvprnn_inst, "set_counterfactual"):
+            raise ValueError(f"--counterfactual-no-rain needs a model with set_counterfactual() (pyvprnn_v2); got {model}")
+        if args.model_path is None:
+            # inference only: never train a model with the counterfactual inputs
+            missing = [os.path.join(outpath, f"pixel_model_{k}.keras") for k in range(cfg["training"]["kfold"])
+                       if not os.path.exists(os.path.join(outpath, f"pixel_model_{k}.keras"))]
+            if missing:
+                raise FileNotFoundError("--counterfactual-no-rain runs trained models only; missing: "
+                                        + ", ".join(missing) + " -> train first (without the flag).")
+
     if args.model_path is None:
         model_paths = train_or_load_folds(pyvprnn_inst, outpath, cfg)
     else:
@@ -576,6 +598,10 @@ def main():
         pyvprnn_inst.load_model(model_paths[0])
 
     # --- inference ---------------------------------------------------------------
+    if args.counterfactual_no_rain:
+        # after loading: every generator built from here on uses precipitation = 0
+        pyvprnn_inst.set_counterfactual(zero_precip=True)
+        logger.warning("COUNTERFACTUAL: precipitation set to 0 everywhere (output tagged '_%s')", cf_tag)
     eval_cfg = cfg["evaluation"]
     if args.no_footprint:
         dynamic_footprint=False
@@ -635,12 +661,16 @@ def main():
             model=f"{model}_fixedfp", align_on='datetime_utc'
         )
 
+    if args.counterfactual_no_rain:
+        pyvprnn_inst.ds_cropped.attrs["counterfactual"] = "no_rain: precipitation = 0 everywhere at inference"
+
+    tags = "_".join(t for t in (args.add_to_outfile, cf_tag) if t)
     if args.no_footprint:
         base, ext = os.path.splitext(cfg["paths"]["inference_data_filename"])
-        suffix = f"_{args.add_to_outfile}" if args.add_to_outfile else ""
+        suffix = f"_{tags}" if tags else ""
         ds_cropped_path = os.path.join(outpath, f"{base}{suffix}{ext}")
     else:
-        ds_cropped_path = os.path.join(outpath, "ds_cropped_{}.nc".format(args.add_to_outfile))
+        ds_cropped_path = os.path.join(outpath, "ds_cropped_{}.nc".format(tags))
     saved_ds = save_cropped_dataset(pyvprnn_inst.ds_cropped, ds_cropped_path)
 
     if not cfg["plotting"]["enabled"]:
@@ -669,6 +699,7 @@ def main():
     make_pdp_ice_plot(
         ds_cropped_path, cfg, site, primary_model_path,
         os.path.join(figure_dir, "{site}_pdp.png"), model=model,
+        counterfactual_no_rain=args.counterfactual_no_rain,
     )
 
 
